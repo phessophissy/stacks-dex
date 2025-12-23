@@ -121,18 +121,12 @@
   </div>
 
   <script type="module">
-    import { showConnect, openContractCall, UserSession, AppConfig } from 'https://esm.sh/@stacks/connect@7.7.1';
-    import { uintCV, contractPrincipalCV, PostConditionMode, AnchorMode } from 'https://esm.sh/@stacks/transactions@6.13.0';
-    import { StacksMainnet } from 'https://esm.sh/@stacks/network@6.13.0';
-
     const CONFIG = {
       poolContract: { address: 'SP31G2FZ5JN87BATZMP4ZRYE5F7WZQDNEXJ7G7X97', name: 'pool' },
       tokenX: { address: 'SP102V8P0F7JX67ARQ77WEA3D3CFB5XW39REDT0AM', name: 'token-alex', decimals: 8, assetName: 'alex' },
       tokenY: { address: 'SP2C2YFP12AJZB4MABJBAJ55XECVS7E4PMMZ89YZR', name: 'usda-token', decimals: 6, assetName: 'usda' }
     };
 
-    const appConfig = new AppConfig(['store_write', 'publish_data']);
-    const userSession = new UserSession({ appConfig });
     let userAddress = null;
 
     function showStatus(msg, type) {
@@ -141,23 +135,36 @@
       el.className = `status show ${type}`;
     }
 
-    function connectWallet() {
-      showConnect({
-        appDetails: { 
-          name: 'Stacks DEX', 
-          icon: window.location.origin + '/favicon.svg' 
-        },
-        redirectTo: '/',
-        onFinish: () => {
-          const userData = userSession.loadUserData();
-          userAddress = userData.profile.stxAddress.mainnet;
+    async function connectWallet() {
+      // Check for Leather wallet
+      if (!window.LeatherProvider) {
+        showStatus('Leather wallet not found. Please install it from leather.io', 'error');
+        return;
+      }
+
+      try {
+        showStatus('Connecting to Leather...', 'pending');
+        const response = await window.LeatherProvider.request('getAddresses');
+        
+        // Find Stacks mainnet address
+        const stacksAddress = response.result.addresses.find(
+          addr => addr.symbol === 'STX' && addr.type === 'p2wpkh'
+        );
+        
+        if (stacksAddress) {
+          userAddress = stacksAddress.address;
           document.getElementById('wallet-status').innerHTML = `<p class="connected">✓ Connected: ${userAddress.slice(0,6)}...${userAddress.slice(-4)}</p>`;
           document.getElementById('connect-btn').style.display = 'none';
           document.getElementById('init-form').style.display = 'block';
-        },
-        onCancel: () => showStatus('Connection cancelled', 'error'),
-        userSession
-      });
+          showStatus('', '');
+          document.getElementById('status').style.display = 'none';
+        } else {
+          showStatus('No Stacks address found in wallet', 'error');
+        }
+      } catch (err) {
+        console.error('Connection error:', err);
+        showStatus(`Connection failed: ${err.message}`, 'error');
+      }
     }
 
     async function initializePool() {
@@ -180,41 +187,30 @@
       showStatus(`Initializing pool with ${amountXInput} ALEX and ${amountYInput} USDA...`, 'pending');
 
       try {
-        openContractCall({
-          contractAddress: CONFIG.poolContract.address,
-          contractName: CONFIG.poolContract.name,
+        const response = await window.LeatherProvider.request('stx_callContract', {
+          contract: `${CONFIG.poolContract.address}.${CONFIG.poolContract.name}`,
           functionName: 'initialize-pool',
           functionArgs: [
-            contractPrincipalCV(CONFIG.tokenX.address, CONFIG.tokenX.name),
-            contractPrincipalCV(CONFIG.tokenY.address, CONFIG.tokenY.name),
-            uintCV(amountX),
-            uintCV(amountY)
+            { type: 'principal', value: `${CONFIG.tokenX.address}.${CONFIG.tokenX.name}` },
+            { type: 'principal', value: `${CONFIG.tokenY.address}.${CONFIG.tokenY.name}` },
+            { type: 'uint', value: amountX.toString() },
+            { type: 'uint', value: amountY.toString() }
           ],
-          postConditionMode: PostConditionMode.Allow,
-          network: new StacksMainnet(),
-          anchorMode: AnchorMode.Any,
-          onFinish: (data) => {
-            showStatus(`✓ Transaction submitted! TX ID: ${data.txId}`, 'success');
-            console.log('TX:', data);
-          },
-          onCancel: () => showStatus('Transaction cancelled', 'error'),
-          userSession
+          network: 'mainnet',
+          postConditionMode: 'allow'
         });
+        
+        showStatus(`✓ Transaction submitted! TX ID: ${response.result.txid}`, 'success');
+        console.log('TX:', response);
       } catch (err) {
         showStatus(`Error: ${err.message}`, 'error');
         console.error(err);
       }
     }
 
-    // Check if already signed in
-    if (userSession.isUserSignedIn()) {
-      const userData = userSession.loadUserData();
-      userAddress = userData.profile.stxAddress.mainnet;
-      document.getElementById('wallet-status').innerHTML = `<p class="connected">✓ Connected: ${userAddress.slice(0,6)}...${userAddress.slice(-4)}</p>`;
-      document.getElementById('connect-btn').style.display = 'none';
-      document.getElementById('init-form').style.display = 'block';
-    }
-
+    // Update button text
+    document.getElementById('connect-btn').textContent = 'Connect Leather Wallet';
+    
     document.getElementById('connect-btn').addEventListener('click', connectWallet);
     document.getElementById('init-btn').addEventListener('click', initializePool);
   </script>
