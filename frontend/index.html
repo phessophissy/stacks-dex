@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stacks DEX - Minimal AMM</title>
+  <link rel="stylesheet" href="/src/styles.css">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+          <circle cx="16" cy="16" r="14" stroke="currentColor" stroke-width="2"/>
+          <path d="M10 16h12M16 10v12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <span>Stacks DEX</span>
+      </div>
+      <div class="wallet-section">
+        <div id="wallet-status" class="wallet-status">
+          <button id="connect-btn" class="btn btn-primary">Connect Wallet</button>
+        </div>
+        <div id="wallet-info" class="wallet-info hidden">
+          <span id="wallet-address" class="wallet-address"></span>
+          <button id="disconnect-btn" class="btn btn-secondary btn-sm">Disconnect</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main">
+      <!-- Swap Card -->
+      <div class="swap-card">
+        <div class="card-header">
+          <h2>Swap</h2>
+          <button id="settings-btn" class="icon-btn" title="Settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- From Token -->
+        <div class="token-input-container">
+          <label>From</label>
+          <div class="token-input">
+            <input 
+              type="number" 
+              id="input-amount" 
+              placeholder="0.0" 
+              min="0" 
+              step="any"
+            >
+            <div class="token-selector">
+              <button id="token-x-btn" class="token-btn">
+                <span class="token-icon">X</span>
+                <span id="token-x-symbol">TSTX</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M6 9l6 6 6-6"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="balance-row">
+            <span>Balance: <span id="balance-x">0.00</span></span>
+            <button id="max-btn" class="btn-link">MAX</button>
+          </div>
+        </div>
+
+        <!-- Swap Direction Arrow -->
+        <div class="swap-direction">
+          <button id="swap-direction-btn" class="swap-arrow-btn" disabled>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 5v14M5 12l7 7 7-7"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- To Token -->
+        <div class="token-input-container">
+          <label>To (estimated)</label>
+          <div class="token-input">
+            <input 
+              type="number" 
+              id="output-amount" 
+              placeholder="0.0" 
+              readonly
+            >
+            <div class="token-selector">
+              <button id="token-y-btn" class="token-btn">
+                <span class="token-icon">Y</span>
+                <span id="token-y-symbol">TSTY</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M6 9l6 6 6-6"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="balance-row">
+            <span>Balance: <span id="balance-y">0.00</span></span>
+          </div>
+        </div>
+
+        <!-- Swap Details -->
+        <div id="swap-details" class="swap-details hidden">
+          <div class="detail-row">
+            <span>Rate</span>
+            <span id="exchange-rate">-</span>
+          </div>
+          <div class="detail-row">
+            <span>DEX Fee (0.30%)</span>
+            <span id="dex-fee">-</span>
+          </div>
+          <div class="detail-row">
+            <span>Minimum Received</span>
+            <span id="min-received">-</span>
+          </div>
+          <div class="detail-row">
+            <span>Slippage Tolerance</span>
+            <span id="slippage-display">0.5%</span>
+          </div>
+          <div class="detail-row">
+            <span>Price Impact</span>
+            <span id="price-impact">-</span>
+          </div>
+        </div>
+
+        <!-- Swap Button -->
+        <button id="swap-btn" class="btn btn-swap" disabled>
+          Connect Wallet
+        </button>
+
+        <!-- Status Messages -->
+        <div id="status-message" class="status-message hidden"></div>
+      </div>
+
+      <!-- Settings Modal -->
+      <div id="settings-modal" class="modal hidden">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>Settings</h3>
+            <button id="close-settings" class="icon-btn">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 6L6 18M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="setting-group">
+              <label>Slippage Tolerance</label>
+              <div class="slippage-options">
+                <button class="slippage-btn" data-value="0.1">0.1%</button>
+                <button class="slippage-btn active" data-value="0.5">0.5%</button>
+                <button class="slippage-btn" data-value="1.0">1.0%</button>
+                <div class="custom-slippage">
+                  <input type="number" id="custom-slippage" placeholder="Custom" min="0.01" max="50" step="0.01">
+                  <span>%</span>
+                </div>
+              </div>
+            </div>
+            <div class="setting-group">
+              <label>Transaction Deadline</label>
+              <div class="deadline-input">
+                <input type="number" id="deadline-blocks" value="20" min="1" max="100">
+                <span>blocks</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <p>Built on Stacks (Bitcoin L2) • Constant Product AMM</p>
+    </footer>
+  </div>
+
+  <script type="module" src="/src/app.js"></script>
+</body>
+</html>
