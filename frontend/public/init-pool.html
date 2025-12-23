@@ -146,9 +146,11 @@
         showStatus('Connecting to Leather...', 'pending');
         const response = await window.LeatherProvider.request('getAddresses');
         
-        // Find Stacks mainnet address
+        console.log('Leather response:', response);
+        
+        // Find Stacks mainnet address - check for 'stacks' type or address starting with 'SP'
         const stacksAddress = response.result.addresses.find(
-          addr => addr.symbol === 'STX' && addr.type === 'p2wpkh'
+          addr => addr.type === 'stacks' || addr.address?.startsWith('SP') || addr.address?.startsWith('SM')
         );
         
         if (stacksAddress) {
@@ -159,7 +161,9 @@
           showStatus('', '');
           document.getElementById('status').style.display = 'none';
         } else {
-          showStatus('No Stacks address found in wallet', 'error');
+          // Log all addresses for debugging
+          console.log('All addresses:', response.result.addresses);
+          showStatus('No Stacks address found. Check console for details.', 'error');
         }
       } catch (err) {
         console.error('Connection error:', err);
