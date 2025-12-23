@@ -99,7 +99,7 @@
 
     <div id="wallet-status"></div>
 
-    <button id="connect-btn" class="btn btn-secondary">Connect Hiro Wallet</button>
+    <button id="connect-btn" class="btn btn-secondary">Connect Leather Wallet</button>
 
     <div id="init-form" style="display: none;">
       <div class="form-group">
@@ -121,6 +121,8 @@
   </div>
 
   <script type="module">
+    import { uintCV, contractPrincipalCV, cvToHex, serializeCV, hexToBytes, bytesToHex } from 'https://esm.sh/@stacks/transactions@6.13.0';
+
     const CONFIG = {
       poolContract: { address: 'SP31G2FZ5JN87BATZMP4ZRYE5F7WZQDNEXJ7G7X97', name: 'pool' },
       tokenX: { address: 'SP102V8P0F7JX67ARQ77WEA3D3CFB5XW39REDT0AM', name: 'token-alex', decimals: 8, assetName: 'alex' },
@@ -136,7 +138,6 @@
     }
 
     async function connectWallet() {
-      // Check for Leather wallet
       if (!window.LeatherProvider) {
         showStatus('Leather wallet not found. Please install it from leather.io', 'error');
         return;
@@ -148,7 +149,6 @@
         
         console.log('Leather response:', response);
         
-        // Find Stacks mainnet address - check for 'stacks' type or address starting with 'SP'
         const stacksAddress = response.result.addresses.find(
           addr => addr.type === 'stacks' || addr.address?.startsWith('SP') || addr.address?.startsWith('SM')
         );
@@ -161,7 +161,6 @@
           showStatus('', '');
           document.getElementById('status').style.display = 'none';
         } else {
-          // Log all addresses for debugging
           console.log('All addresses:', response.result.addresses);
           showStatus('No Stacks address found. Check console for details.', 'error');
         }
@@ -191,30 +190,44 @@
       showStatus(`Initializing pool with ${amountXInput} ALEX and ${amountYInput} USDA...`, 'pending');
 
       try {
+        // Build Clarity values and serialize to hex
+        const tokenXCV = contractPrincipalCV(CONFIG.tokenX.address, CONFIG.tokenX.name);
+        const tokenYCV = contractPrincipalCV(CONFIG.tokenY.address, CONFIG.tokenY.name);
+        const amountXCV = uintCV(amountX);
+        const amountYCV = uintCV(amountY);
+        
+        // Serialize to hex for Leather
+        const args = [
+          bytesToHex(serializeCV(tokenXCV)),
+          bytesToHex(serializeCV(tokenYCV)),
+          bytesToHex(serializeCV(amountXCV)),
+          bytesToHex(serializeCV(amountYCV))
+        ];
+        
+        console.log('Calling contract with args:', args);
+        
         const response = await window.LeatherProvider.request('stx_callContract', {
           contract: `${CONFIG.poolContract.address}.${CONFIG.poolContract.name}`,
           functionName: 'initialize-pool',
-          functionArgs: [
-            { type: 'principal', value: `${CONFIG.tokenX.address}.${CONFIG.tokenX.name}` },
-            { type: 'principal', value: `${CONFIG.tokenY.address}.${CONFIG.tokenY.name}` },
-            { type: 'uint', value: amountX.toString() },
-            { type: 'uint', value: amountY.toString() }
-          ],
+          functionArgs: args,
           network: 'mainnet',
           postConditionMode: 'allow'
         });
         
-        showStatus(`✓ Transaction submitted! TX ID: ${response.result.txid}`, 'success');
-        console.log('TX:', response);
+        console.log('TX Response:', response);
+        
+        const txid = response.result?.txid || response.result?.txId;
+        if (txid) {
+          showStatus(`✓ Transaction submitted! TX ID: ${txid}`, 'success');
+        } else {
+          showStatus('Transaction submitted. Check your wallet for status.', 'success');
+        }
       } catch (err) {
+        console.error('Initialize error:', err);
         showStatus(`Error: ${err.message}`, 'error');
-        console.error(err);
       }
     }
 
-    // Update button text
-    document.getElementById('connect-btn').textContent = 'Connect Leather Wallet';
-    
     document.getElementById('connect-btn').addEventListener('click', connectWallet);
     document.getElementById('init-btn').addEventListener('click', initializePool);
   </script>
