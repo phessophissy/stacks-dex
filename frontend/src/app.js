@@ -1,35 +1,32 @@
 /**
- * ============================================================================
- * STACKS DEX - Main Application with REOWN AppKit
- * ============================================================================
+ * ==============================================================================
+ * STACKS DEX - Main Application with REOWN AppKit + Browser Extension Support
+ * ==============================================================================
  * 
- * Architecture:
+ * Architecture (per ChatGPT guidance):
  * 
  *   DEX Frontend
  *        |
  *        |  Wallet UI + sessions
  *        v
- *   REOWN AppKit (chain-agnostic transport + UX)
+ *   REOWN AppKit / WalletKit (chain-agnostic transport + UX)
  *        |
- *        |  WalletConnect v2 transport
- *        v
- *   WalletConnect Stacks JSON-RPC
+ *        +---> Browser Extension Provider (Leather/Xverse)
+ *        |        |
+ *        |        v window.LeatherProvider / window.XverseProviders
  *        |
- *        |  stx_* methods
- *        v
- *   Stacks Wallet (Hiro / Xverse / Leather)
+ *        +---> WalletConnect v2 transport (for mobile)
+ *                 |
+ *                 v stx_* JSON-RPC methods
  * 
  * Key Points:
  * - REOWN AppKit does NOT have a Stacks-specific SDK
- * - Stacks support uses WalletConnect v2 with stx_* JSON-RPC methods
+ * - Browser extensions (Leather) use their own provider APIs
+ * - WalletConnect v2 uses stx_* JSON-RPC methods for mobile
  * - Frontend builds transactions, wallet signs them
- * - stx_getAddresses - get user's Stacks addresses
- * - stx_signTransaction - sign a Stacks transaction
- * - stx_signMessage - sign arbitrary messages
- * ============================================================================
+ * ==============================================================================
  */
 
-// REOWN AppKit not used - Stacks uses WalletConnect Universal Provider directly
 import UniversalProvider from '@walletconnect/universal-provider';
 import { 
   makeUnsignedContractCall,
@@ -40,40 +37,38 @@ import {
   makeStandardFungiblePostCondition,
   AnchorMode,
   deserializeTransaction,
-  broadcastTransaction
+  broadcastTransaction,
+  createAssetInfo
 } from '@stacks/transactions';
 import { StacksMainnet, StacksTestnet } from '@stacks/network';
 
-// ============================================================================
+// ==============================================================================
 // CONFIGURATION
-// ============================================================================
+// ==============================================================================
 
 const CONFIG = {
   // Network configuration - MAINNET
   network: 'mainnet',
   
-  // REOWN AppKit Project ID (get from https://cloud.reown.com)
+  // REOWN AppKit Project ID
   projectId: '904d5b805622ae67732d359178980e74',
   
-  // Contract addresses (update after deployment)
+  // Pool contract
   poolContract: {
     address: 'SP31G2FZ5JN87BATZMP4ZRYE5F7WZQDNEXJ7G7X97',
     name: 'pool'
   },
-  // Example mainnet SIP-010 tokens (update with your token pair)
-  // Common mainnet tokens:
-  // - STX (native)
-  // - ALEX: SP3K8BC0PPEVCV7NZ6QSRWPQ2JE9E5B6N3PA0KBR9.age000-governance-token
-  // - USDA: SP2C2YFP12AJZB4MABJBAJ55XECVS7E4PMMZ89YZR.usda-token
+  
+  // Token pair
   tokenX: {
-    address: 'SP3K8BC0PPEVCV7NZ6QSRWPQ2JE9E5B6N3PA0KBR9', // Example: ALEX token
+    address: 'SP3K8BC0PPEVCV7NZ6QSRWPQ2JE9E5B6N3PA0KBR9',
     name: 'age000-governance-token',
     symbol: 'ALEX',
     decimals: 8,
     assetName: 'alex'
   },
   tokenY: {
-    address: 'SP2C2YFP12AJZB4MABJBAJ55XECVS7E4PMMZ89YZR', // Example: USDA
+    address: 'SP2C2YFP12AJZB4MABJBAJ55XECVS7E4PMMZ89YZR',
     name: 'usda-token',
     symbol: 'USDA',
     decimals: 6,
@@ -105,14 +100,15 @@ const stacksNetwork = CONFIG.network === 'mainnet'
 // Stacks chain identifier for WalletConnect
 const STACKS_CHAIN_ID = CONFIG.network === 'mainnet' ? 'stacks:1' : 'stacks:2147483648';
 
-// ============================================================================
+// ==============================================================================
 // STATE
-// ============================================================================
+// ==============================================================================
 
 let state = {
   connected: false,
   address: null,
   provider: null,
+  providerType: null, // 'leather', 'xverse', 'walletconnect'
   session: null,
   balanceX: 0,
   balanceY: 0,
@@ -123,12 +119,12 @@ let state = {
   inputAmount: '',
   outputAmount: '',
   currentBlockHeight: 0,
-  swapDirection: true
+  swapDirection: true // true = X->Y, false = Y->X
 };
 
-// ============================================================================
+// ==============================================================================
 // DOM ELEMENTS
-// ============================================================================
+// ==============================================================================
 
 const elements = {
   connectBtn: document.getElementById('connect-btn'),
@@ -160,9 +156,9 @@ const elements = {
   tokenYSymbol: document.getElementById('token-y-symbol')
 };
 
-// ============================================================================
+// ==============================================================================
 // UTILITY FUNCTIONS
-// ============================================================================
+// ==============================================================================
 
 function formatAmount(amount, decimals = 6) {
   const value = Number(amount) / Math.pow(10, decimals);
@@ -207,36 +203,282 @@ function hexToBytes(hex) {
   return bytes;
 }
 
-// ============================================================================
-// REOWN APPKIT + WALLETCONNECT INITIALIZATION
-// ============================================================================
+// ==============================================================================
+// WALLET DETECTION
+// ==============================================================================
 
-// WalletConnect Universal Provider only (no AppKit for Stacks)
+/**
+ * Detect available wallet providers
+ */
+function detectWallets() {
+  const wallets = [];
+  
+  // Check for Leather (browser extension)
+  if (typeof window !== 'undefined' && window.LeatherProvider) {
+    wallets.push({ id: 'leather', name: 'Leather', icon: '🦊', provider: window.LeatherProvider });
+  }
+  
+  // Check for Xverse (browser extension)
+  if (typeof window !== 'undefined' && (window.XverseProviders?.StacksProvider || window.btc)) {
+    wallets.push({ id: 'xverse', name: 'Xverse', icon: '🟠', provider: window.XverseProviders?.StacksProvider });
+  }
+  
+  // WalletConnect is always available as fallback
+  wallets.push({ id: 'walletconnect', name: 'WalletConnect', icon: '🔗', provider: null });
+  
+  return wallets;
+}
+
+// ==============================================================================
+// WALLET MODAL UI
+// ==============================================================================
+
 let universalProvider = null;
 
 /**
- * Initialize REOWN AppKit with WalletConnect Universal Provider
- * This sets up the chain-agnostic transport layer
+ * Show wallet selection modal
  */
-async function initializeWalletConnect() {
-  try {
-    console.log('Initializing WalletConnect with project ID:', CONFIG.projectId);
+function showWalletModal() {
+  const wallets = detectWallets();
+  
+  // Create modal
+  let modal = document.getElementById('wallet-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'wallet-modal';
+    modal.className = 'wallet-modal';
+    document.body.appendChild(modal);
     
-    // Initialize Universal Provider for WalletConnect v2
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) closeWalletModal();
+    });
+  }
+  
+  // Build wallet list
+  const walletList = wallets.map(w => `
+    <button class="wallet-option" data-wallet="${w.id}">
+      <span class="wallet-icon">${w.icon}</span>
+      <span class="wallet-name">${w.name}</span>
+      ${w.id !== 'walletconnect' ? '<span class="wallet-badge">Detected</span>' : '<span class="wallet-badge secondary">QR Code</span>'}
+    </button>
+  `).join('');
+  
+  modal.innerHTML = `
+    <div class="wallet-modal-content">
+      <div class="wallet-modal-header">
+        <h3>Connect Wallet</h3>
+        <button class="wallet-close-btn" onclick="closeWalletModal()">&times;</button>
+      </div>
+      <div class="wallet-modal-body">
+        <p class="wallet-subtitle">Select a wallet to connect</p>
+        <div class="wallet-list">
+          ${walletList}
+        </div>
+      </div>
+    </div>
+  `;
+  
+  modal.style.display = 'flex';
+  
+  // Attach click handlers
+  modal.querySelectorAll('.wallet-option').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const walletId = btn.dataset.wallet;
+      closeWalletModal();
+      connectWithWallet(walletId);
+    });
+  });
+}
+
+function closeWalletModal() {
+  const modal = document.getElementById('wallet-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+// Make globally accessible
+window.closeWalletModal = closeWalletModal;
+
+// ==============================================================================
+// LEATHER WALLET CONNECTION (Browser Extension)
+// ==============================================================================
+
+async function connectWithLeather() {
+  if (!window.LeatherProvider) {
+    throw new Error('Leather wallet not installed. Please install from leather.io');
+  }
+  
+  showStatus('Connecting to Leather...', 'pending');
+  
+  try {
+    // Request addresses using Leather's API
+    const response = await window.LeatherProvider.request('getAddresses');
+    console.log('Leather response:', response);
+    
+    if (response.result && response.result.addresses) {
+      // Find Stacks address
+      const stacksAddress = response.result.addresses.find(addr => 
+        addr.symbol === 'STX' && 
+        (CONFIG.network === 'mainnet' ? addr.address.startsWith('SP') : addr.address.startsWith('ST'))
+      );
+      
+      if (stacksAddress) {
+        state.address = stacksAddress.address;
+        state.provider = window.LeatherProvider;
+        state.providerType = 'leather';
+        state.connected = true;
+        
+        hideStatus();
+        showStatus('Connected to Leather!', 'success');
+        setTimeout(hideStatus, 2000);
+        
+        updateUI();
+        await Promise.all([fetchBalances(), fetchReserves()]);
+        return;
+      }
+    }
+    
+    throw new Error('No Stacks address found in Leather wallet');
+    
+  } catch (error) {
+    console.error('Leather connection error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Sign transaction with Leather
+ */
+async function signWithLeather(unsignedTx) {
+  const serializedTx = bytesToHex(unsignedTx.serialize());
+  
+  const response = await window.LeatherProvider.request('stx_signTransaction', {
+    transaction: serializedTx,
+    network: CONFIG.network
+  });
+  
+  console.log('Leather sign response:', response);
+  
+  if (response.result) {
+    // If wallet broadcast, return txId
+    if (response.result.txId) {
+      return response.result.txId;
+    }
+    // Otherwise, deserialize and broadcast
+    const signedTxHex = response.result.transaction || response.result;
+    const signedTx = deserializeTransaction(hexToBytes(signedTxHex));
+    const broadcastResult = await broadcastTransaction(signedTx, stacksNetwork);
+    
+    if (broadcastResult.error) {
+      throw new Error(broadcastResult.reason || 'Broadcast failed');
+    }
+    return broadcastResult.txid;
+  }
+  
+  throw new Error('Signing failed');
+}
+
+// ==============================================================================
+// XVERSE WALLET CONNECTION (Browser Extension)
+// ==============================================================================
+
+async function connectWithXverse() {
+  // Xverse uses sats-connect library or direct provider
+  showStatus('Connecting to Xverse...', 'pending');
+  
+  try {
+    // Try using the direct provider first
+    let provider = window.XverseProviders?.StacksProvider;
+    
+    if (!provider) {
+      throw new Error('Xverse wallet not installed. Please install from xverse.app');
+    }
+    
+    const response = await provider.request('getAddresses', {
+      purposes: ['stacks']
+    });
+    
+    console.log('Xverse response:', response);
+    
+    if (response.result && response.result.addresses) {
+      const stacksAddress = response.result.addresses.find(addr => 
+        addr.purpose === 'stacks' &&
+        (CONFIG.network === 'mainnet' ? addr.address.startsWith('SP') : addr.address.startsWith('ST'))
+      );
+      
+      if (stacksAddress) {
+        state.address = stacksAddress.address;
+        state.provider = provider;
+        state.providerType = 'xverse';
+        state.connected = true;
+        
+        hideStatus();
+        showStatus('Connected to Xverse!', 'success');
+        setTimeout(hideStatus, 2000);
+        
+        updateUI();
+        await Promise.all([fetchBalances(), fetchReserves()]);
+        return;
+      }
+    }
+    
+    throw new Error('No Stacks address found in Xverse wallet');
+    
+  } catch (error) {
+    console.error('Xverse connection error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Sign transaction with Xverse
+ */
+async function signWithXverse(unsignedTx) {
+  const provider = window.XverseProviders?.StacksProvider;
+  const serializedTx = bytesToHex(unsignedTx.serialize());
+  
+  const response = await provider.request('stx_signTransaction', {
+    transaction: serializedTx,
+    network: CONFIG.network
+  });
+  
+  console.log('Xverse sign response:', response);
+  
+  if (response.result) {
+    if (response.result.txId) {
+      return response.result.txId;
+    }
+    const signedTxHex = response.result.transaction || response.result;
+    const signedTx = deserializeTransaction(hexToBytes(signedTxHex));
+    const broadcastResult = await broadcastTransaction(signedTx, stacksNetwork);
+    
+    if (broadcastResult.error) {
+      throw new Error(broadcastResult.reason || 'Broadcast failed');
+    }
+    return broadcastResult.txid;
+  }
+  
+  throw new Error('Signing failed');
+}
+
+// ==============================================================================
+// WALLETCONNECT CONNECTION (QR Code / Mobile)
+// ==============================================================================
+
+async function initializeWalletConnect() {
+  if (universalProvider) return;
+  
+  try {
+    console.log('Initializing WalletConnect...');
+    
     universalProvider = await UniversalProvider.init({
       projectId: CONFIG.projectId,
       metadata: CONFIG.metadata,
       relayUrl: 'wss://relay.walletconnect.com'
     });
 
-    // Display QR code when URI is generated
     universalProvider.on('display_uri', (uri) => {
       console.log('WalletConnect URI:', uri);
       showQRModal(uri);
-    });
-
-    universalProvider.on('session_event', (event) => {
-      console.log('Session event:', event);
     });
 
     universalProvider.on('session_delete', () => {
@@ -244,57 +486,108 @@ async function initializeWalletConnect() {
       handleDisconnect();
     });
 
-    console.log('WalletConnect initialized successfully');
+    console.log('WalletConnect initialized');
     
-    // Check for existing session
-    if (universalProvider.session) {
-      await restoreSession();
-    }
-
   } catch (error) {
-    console.error('Failed to initialize WalletConnect:', error);
-    showStatus('Failed to initialize: ' + error.message, 'error');
+    console.error('WalletConnect init failed:', error);
+    throw error;
   }
 }
 
-// Show QR code modal for WalletConnect
+async function connectWithWalletConnect() {
+  showStatus('Opening WalletConnect...', 'pending');
+  
+  try {
+    await initializeWalletConnect();
+    
+    console.log('Connecting via WalletConnect...');
+    const session = await universalProvider.connect({
+      namespaces: {
+        stacks: {
+          methods: ['stx_getAddresses', 'stx_signTransaction', 'stx_signMessage'],
+          chains: [STACKS_CHAIN_ID],
+          events: ['accountsChanged', 'chainChanged']
+        }
+      }
+    });
+
+    closeQRModal();
+    
+    state.session = session;
+    state.provider = universalProvider;
+    state.providerType = 'walletconnect';
+    
+    // Get Stacks address
+    const response = await universalProvider.request({
+      method: 'stx_getAddresses',
+      params: {}
+    }, STACKS_CHAIN_ID);
+
+    console.log('stx_getAddresses response:', response);
+
+    if (response && response.addresses) {
+      const addressInfo = response.addresses.find(addr => 
+        CONFIG.network === 'mainnet' 
+          ? addr.address.startsWith('SP') 
+          : addr.address.startsWith('ST')
+      );
+      state.address = addressInfo?.address || response.addresses[0]?.address;
+    } else if (typeof response === 'string') {
+      state.address = response;
+    }
+
+    if (!state.address) {
+      throw new Error('No Stacks address returned');
+    }
+
+    state.connected = true;
+    hideStatus();
+    showStatus('Connected via WalletConnect!', 'success');
+    setTimeout(hideStatus, 2000);
+    
+    updateUI();
+    await Promise.all([fetchBalances(), fetchReserves()]);
+
+  } catch (error) {
+    console.error('WalletConnect connection failed:', error);
+    closeQRModal();
+    throw error;
+  }
+}
+
 function showQRModal(uri) {
-  // Create modal if it doesn't exist
   let modal = document.getElementById('wc-qr-modal');
   if (!modal) {
     modal = document.createElement('div');
     modal.id = 'wc-qr-modal';
-    modal.className = 'wc-modal';
-    modal.innerHTML = `
-      <div class="wc-modal-content">
-        <div class="wc-modal-header">
-          <h3>Connect Wallet</h3>
-          <button class="wc-close-btn" onclick="closeQRModal()">&times;</button>
-        </div>
-        <div class="wc-modal-body">
-          <p>Scan with your Stacks wallet</p>
-          <div id="wc-qr-container"></div>
-          <div class="wc-uri-section">
-            <input type="text" id="wc-uri-input" readonly>
-            <button onclick="copyWcUri()">Copy</button>
-          </div>
-        </div>
-      </div>
-    `;
+    modal.className = 'wallet-modal';
     document.body.appendChild(modal);
     
-    // Close on backdrop click
     modal.addEventListener('click', (e) => {
       if (e.target === modal) closeQRModal();
     });
   }
   
-  // Generate QR code
-  const qrContainer = document.getElementById('wc-qr-container');
-  qrContainer.innerHTML = `<img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(uri)}" alt="WalletConnect QR" style="border-radius: 12px; background: white; padding: 12px;">`;
-  
-  // Set URI for copy
-  document.getElementById('wc-uri-input').value = uri;
+  modal.innerHTML = `
+    <div class="wallet-modal-content">
+      <div class="wallet-modal-header">
+        <h3>Scan QR Code</h3>
+        <button class="wallet-close-btn" onclick="closeQRModal()">&times;</button>
+      </div>
+      <div class="wallet-modal-body">
+        <p class="wallet-subtitle">Scan with your Stacks-compatible mobile wallet</p>
+        <div id="wc-qr-container">
+          <img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(uri)}" 
+               alt="WalletConnect QR" 
+               style="border-radius: 12px; background: white; padding: 12px;">
+        </div>
+        <div class="wc-uri-section">
+          <input type="text" id="wc-uri-input" value="${uri}" readonly>
+          <button onclick="copyWcUri()">Copy</button>
+        </div>
+      </div>
+    </div>
+  `;
   
   modal.style.display = 'flex';
 }
@@ -308,140 +601,78 @@ function copyWcUri() {
   const input = document.getElementById('wc-uri-input');
   if (input) {
     navigator.clipboard.writeText(input.value);
-    showStatus('Copied to clipboard!', 'success');
+    showStatus('Copied!', 'success');
     setTimeout(hideStatus, 2000);
   }
 }
 
-// Make functions globally accessible
 window.closeQRModal = closeQRModal;
 window.copyWcUri = copyWcUri;
 
-// ============================================================================
-// WALLET CONNECTION FUNCTIONS
-// ============================================================================
-
 /**
- * Connect wallet using REOWN AppKit modal
- * Opens the AppKit modal for wallet selection and connection
+ * Sign transaction with WalletConnect
  */
-async function connectWallet() {
-  try {
-    showStatus('Connecting...', 'pending');
+async function signWithWalletConnect(unsignedTx) {
+  const serializedTx = bytesToHex(unsignedTx.serialize());
 
-    // Initialize WalletConnect if not already done
-    if (!universalProvider) {
-      await initializeWalletConnect();
+  const signedTxHex = await universalProvider.request({
+    method: 'stx_signTransaction',
+    params: {
+      transaction: serializedTx,
+      network: CONFIG.network,
+      address: state.address
     }
+  }, STACKS_CHAIN_ID);
 
-    // Connect via WalletConnect - this will trigger display_uri event
-    console.log('Connecting via WalletConnect...');
-    const session = await universalProvider.connect({
-      namespaces: {
-        stacks: {
-          methods: ['stx_getAddresses', 'stx_signTransaction', 'stx_signMessage'],
-          chains: [STACKS_CHAIN_ID],
-          events: ['accountsChanged', 'chainChanged']
-        }
-      }
-    });
+  console.log('Signed transaction:', signedTxHex);
 
-    // Close QR modal on successful connection
-    closeQRModal();
-    
-    state.session = session;
-    state.provider = universalProvider;
-    
-    // Get Stacks address
-    await getStacksAddresses();
-    
-    state.connected = true;
-    hideStatus();
-    showStatus('Connected!', 'success');
-    setTimeout(hideStatus, 2000);
-    
-    updateUI();
-    await Promise.all([fetchBalances(), fetchReserves()]);
+  if (typeof signedTxHex === 'object' && signedTxHex.txId) {
+    return signedTxHex.txId;
+  }
 
+  const signedTx = deserializeTransaction(hexToBytes(signedTxHex));
+  const broadcastResult = await broadcastTransaction(signedTx, stacksNetwork);
+  
+  if (broadcastResult.error) {
+    throw new Error(broadcastResult.reason || 'Broadcast failed');
+  }
+
+  return broadcastResult.txid;
+}
+
+// ==============================================================================
+// MAIN CONNECTION HANDLER
+// ==============================================================================
+
+async function connectWallet() {
+  showWalletModal();
+}
+
+async function connectWithWallet(walletId) {
+  try {
+    switch (walletId) {
+      case 'leather':
+        await connectWithLeather();
+        break;
+      case 'xverse':
+        await connectWithXverse();
+        break;
+      case 'walletconnect':
+        await connectWithWalletConnect();
+        break;
+      default:
+        throw new Error('Unknown wallet');
+    }
   } catch (error) {
-    console.error('Connection failed:', error);
-    closeQRModal();
+    console.error('Connection error:', error);
     showStatus('Connection failed: ' + error.message, 'error');
     setTimeout(hideStatus, 3000);
   }
 }
 
-/**
- * Get Stacks addresses via WalletConnect JSON-RPC
- */
-async function getStacksAddresses() {
-  if (!universalProvider) throw new Error('Provider not initialized');
-
-  try {
-    // Call stx_getAddresses via WalletConnect
-    const response = await universalProvider.request({
-      method: 'stx_getAddresses',
-      params: {}
-    }, STACKS_CHAIN_ID);
-
-    console.log('stx_getAddresses response:', response);
-
-    // Extract address based on network
-    if (response && response.addresses) {
-      const addressInfo = response.addresses.find(addr => 
-        CONFIG.network === 'mainnet' 
-          ? addr.address.startsWith('SP') 
-          : addr.address.startsWith('ST')
-      );
-      
-      if (addressInfo) {
-        state.address = addressInfo.address;
-      } else if (response.addresses.length > 0) {
-        state.address = response.addresses[0].address;
-      }
-    } else if (typeof response === 'string') {
-      state.address = response;
-    }
-
-    if (!state.address) {
-      throw new Error('No Stacks address returned');
-    }
-
-    console.log('Connected address:', state.address);
-
-  } catch (error) {
-    console.error('Failed to get addresses:', error);
-    throw error;
-  }
-}
-
-/**
- * Restore existing WalletConnect session
- */
-async function restoreSession() {
-  try {
-    state.session = universalProvider.session;
-    state.provider = universalProvider;
-    
-    await getStacksAddresses();
-    
-    state.connected = true;
-    updateUI();
-    
-    await Promise.all([fetchBalances(), fetchReserves()]);
-    
-  } catch (error) {
-    console.error('Failed to restore session:', error);
-    await disconnectWallet();
-  }
-}
-
-/**
- * Disconnect wallet
- */
 async function disconnectWallet() {
   try {
-    if (universalProvider && state.session) {
+    if (state.providerType === 'walletconnect' && universalProvider && state.session) {
       await universalProvider.disconnect();
     }
   } catch (error) {
@@ -455,69 +686,38 @@ function handleDisconnect() {
   state.connected = false;
   state.address = null;
   state.session = null;
+  state.provider = null;
+  state.providerType = null;
   state.balanceX = 0;
   state.balanceY = 0;
   updateUI();
 }
 
-// ============================================================================
-// STACKS TRANSACTION FUNCTIONS
-// ============================================================================
+// ==============================================================================
+// SIGN AND BROADCAST TRANSACTION (Routes to correct provider)
+// ==============================================================================
 
-/**
- * Sign and broadcast a Stacks transaction via WalletConnect
- * Uses stx_signTransaction JSON-RPC method
- */
 async function signAndBroadcastTransaction(unsignedTx) {
-  if (!universalProvider || !state.address) {
+  if (!state.connected || !state.address) {
     throw new Error('Wallet not connected');
   }
 
-  // Serialize the unsigned transaction to hex
-  const serializedTx = bytesToHex(unsignedTx.serialize());
-
-  console.log('Requesting signature for transaction:', serializedTx);
-
-  // Request signature via WalletConnect stx_signTransaction
-  const signedTxHex = await universalProvider.request({
-    method: 'stx_signTransaction',
-    params: {
-      // The unsigned transaction in hex format
-      transaction: serializedTx,
-      // Network identifier
-      network: CONFIG.network,
-      // Optional: specify the address that should sign
-      address: state.address
-    }
-  }, STACKS_CHAIN_ID);
-
-  console.log('Signed transaction:', signedTxHex);
-
-  // Broadcast the signed transaction
-  // Some wallets broadcast automatically, others return the signed tx
-  if (typeof signedTxHex === 'object' && signedTxHex.txId) {
-    // Wallet already broadcast
-    return signedTxHex.txId;
+  switch (state.providerType) {
+    case 'leather':
+      return await signWithLeather(unsignedTx);
+    case 'xverse':
+      return await signWithXverse(unsignedTx);
+    case 'walletconnect':
+      return await signWithWalletConnect(unsignedTx);
+    default:
+      throw new Error('No wallet provider available');
   }
-
-  // Deserialize and broadcast
-  const signedTx = deserializeTransaction(hexToBytes(signedTxHex));
-  const broadcastResult = await broadcastTransaction(signedTx, stacksNetwork);
-  
-  if (broadcastResult.error) {
-    throw new Error(broadcastResult.reason || 'Broadcast failed');
-  }
-
-  return broadcastResult.txid;
 }
 
-// ============================================================================
+// ==============================================================================
 // DEX CONTRACT INTERACTIONS
-// ============================================================================
+// ==============================================================================
 
-/**
- * Fetch current pool reserves via Stacks API
- */
 async function fetchReserves() {
   try {
     const apiUrl = CONFIG.network === 'mainnet'
@@ -539,8 +739,6 @@ async function fetchReserves() {
     const data = await response.json();
     
     if (data.okay && data.result) {
-      // Parse Clarity response
-      // Result is a tuple: { x: uint, y: uint }
       const result = parseClarityValue(data.result);
       state.reserveX = result.x || 0;
       state.reserveY = result.y || 0;
@@ -548,173 +746,325 @@ async function fetchReserves() {
     }
   } catch (error) {
     console.error('Failed to fetch reserves:', error);
-    // Set default values for testing
-    state.reserveX = 1000000000; // 1000 tokens
-    state.reserveY = 1000000000;
   }
+  
+  updateSwapDetails();
 }
 
-/**
- * Fetch user token balances via Stacks API
- */
 async function fetchBalances() {
   if (!state.address) return;
 
-  const apiUrl = CONFIG.network === 'mainnet'
-    ? 'https://api.mainnet.hiro.so'
-    : 'https://api.testnet.hiro.so';
-
   try {
-    // Fetch Token X balance
-    const responseX = await fetch(
-      `${apiUrl}/v2/contracts/call-read/${CONFIG.tokenX.address}/${CONFIG.tokenX.name}/get-balance`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sender: state.address,
-          arguments: [cvToHex(principalCV(state.address))]
-        })
-      }
-    );
-    const dataX = await responseX.json();
-    if (dataX.okay) {
-      state.balanceX = parseClarityUint(dataX.result);
+    const apiUrl = CONFIG.network === 'mainnet'
+      ? 'https://api.mainnet.hiro.so'
+      : 'https://api.testnet.hiro.so';
+
+    // Fetch both token balances
+    const balanceUrl = `${apiUrl}/extended/v1/address/${state.address}/balances`;
+    const response = await fetch(balanceUrl);
+    const data = await response.json();
+
+    // Parse fungible token balances
+    if (data.fungible_tokens) {
+      // Token X (ALEX)
+      const tokenXKey = `${CONFIG.tokenX.address}.${CONFIG.tokenX.name}::${CONFIG.tokenX.assetName}`;
+      state.balanceX = parseInt(data.fungible_tokens[tokenXKey]?.balance || '0');
+
+      // Token Y (USDA)
+      const tokenYKey = `${CONFIG.tokenY.address}.${CONFIG.tokenY.name}::${CONFIG.tokenY.assetName}`;
+      state.balanceY = parseInt(data.fungible_tokens[tokenYKey]?.balance || '0');
     }
 
-    // Fetch Token Y balance
-    const responseY = await fetch(
-      `${apiUrl}/v2/contracts/call-read/${CONFIG.tokenY.address}/${CONFIG.tokenY.name}/get-balance`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sender: state.address,
-          arguments: [cvToHex(principalCV(state.address))]
-        })
-      }
-    );
-    const dataY = await responseY.json();
-    if (dataY.okay) {
-      state.balanceY = parseClarityUint(dataY.result);
-    }
-
+    console.log('Balances:', { x: state.balanceX, y: state.balanceY });
     updateBalanceDisplay();
   } catch (error) {
     console.error('Failed to fetch balances:', error);
   }
 }
 
-/**
- * Calculate quote locally using AMM formula
- * Fee is deducted and sent to deployer wallet, not kept in pool
- */
-function calculateQuote(dx) {
-  if (dx <= 0 || state.reserveX <= 0 || state.reserveY <= 0) return 0;
-  
-  // Calculate fee: fee = dx * 30 / 10000 (0.30%)
-  const fee = Math.floor((dx * CONFIG.feeBps) / CONFIG.bpsDenom);
-  
-  // Amount going to pool after fee
-  const dxToPool = dx - fee;
-  
-  // dy = (ry * dx_to_pool) / (rx + dx_to_pool)
-  const numerator = state.reserveY * dxToPool;
-  const denominator = state.reserveX + dxToPool;
-  const dy = Math.floor(numerator / denominator);
-  
-  return dy;
+function parseClarityValue(hex) {
+  // Simplified parser for tuple responses
+  try {
+    if (hex.startsWith('0x')) hex = hex.slice(2);
+    
+    // Check if it's a tuple (0x0c prefix)
+    if (hex.startsWith('0c')) {
+      const result = {};
+      let offset = 2;
+      const numItems = parseInt(hex.slice(offset, offset + 8), 16);
+      offset += 8;
+      
+      for (let i = 0; i < numItems; i++) {
+        // Read key length
+        const keyLen = parseInt(hex.slice(offset, offset + 2), 16);
+        offset += 2;
+        
+        // Read key
+        const keyBytes = [];
+        for (let j = 0; j < keyLen; j++) {
+          keyBytes.push(parseInt(hex.slice(offset + j * 2, offset + j * 2 + 2), 16));
+        }
+        const key = String.fromCharCode(...keyBytes);
+        offset += keyLen * 2;
+        
+        // Read value type
+        const valueType = hex.slice(offset, offset + 2);
+        offset += 2;
+        
+        // Read value based on type
+        if (valueType === '01') { // uint
+          const valueBigInt = BigInt('0x' + hex.slice(offset, offset + 32));
+          result[key] = Number(valueBigInt);
+          offset += 32;
+        }
+      }
+      
+      return result;
+    }
+    
+    return {};
+  } catch (e) {
+    console.error('Parse error:', e);
+    return {};
+  }
 }
 
-/**
- * Execute swap transaction
- */
+// ==============================================================================
+// SWAP CALCULATIONS
+// ==============================================================================
+
+function calculateSwapOutput(amountIn, reserveIn, reserveOut) {
+  if (reserveIn === 0 || reserveOut === 0 || amountIn === 0) return 0;
+  
+  // Constant product formula with fee: dy = (dx * y * (10000 - fee)) / (x * 10000 + dx * (10000 - fee))
+  const amountInWithFee = BigInt(amountIn) * BigInt(CONFIG.bpsDenom - CONFIG.feeBps);
+  const numerator = amountInWithFee * BigInt(reserveOut);
+  const denominator = BigInt(reserveIn) * BigInt(CONFIG.bpsDenom) + amountInWithFee;
+  
+  return Number(numerator / denominator);
+}
+
+function calculatePriceImpact(amountIn, reserveIn, reserveOut) {
+  if (reserveIn === 0 || reserveOut === 0 || amountIn === 0) return 0;
+  
+  const spotPrice = reserveOut / reserveIn;
+  const outputAmount = calculateSwapOutput(amountIn, reserveIn, reserveOut);
+  const executionPrice = outputAmount / amountIn;
+  
+  return ((spotPrice - executionPrice) / spotPrice) * 100;
+}
+
+// ==============================================================================
+// UI UPDATES
+// ==============================================================================
+
+function updateUI() {
+  if (state.connected) {
+    elements.connectBtn.classList.add('hidden');
+    elements.walletInfo.classList.remove('hidden');
+    elements.walletAddress.textContent = truncateAddress(state.address);
+    elements.swapBtn.disabled = false;
+  } else {
+    elements.connectBtn.classList.remove('hidden');
+    elements.walletInfo.classList.add('hidden');
+    elements.walletAddress.textContent = '';
+    elements.swapBtn.disabled = true;
+  }
+  
+  updateBalanceDisplay();
+  updateSwapDetails();
+  updateTokenDisplay();
+}
+
+function updateTokenDisplay() {
+  const inputSymbol = state.swapDirection ? CONFIG.tokenX.symbol : CONFIG.tokenY.symbol;
+  const outputSymbol = state.swapDirection ? CONFIG.tokenY.symbol : CONFIG.tokenX.symbol;
+  
+  if (elements.tokenXSymbol) elements.tokenXSymbol.textContent = inputSymbol;
+  if (elements.tokenYSymbol) elements.tokenYSymbol.textContent = outputSymbol;
+  
+  // Update input/output labels
+  const inputLabel = document.querySelector('.token-input-container .token-label');
+  const outputLabel = document.querySelector('.token-output-container .token-label');
+  if (inputLabel) inputLabel.textContent = `From (${inputSymbol})`;
+  if (outputLabel) outputLabel.textContent = `To (${outputSymbol})`;
+}
+
+function updateBalanceDisplay() {
+  const inputBalance = state.swapDirection ? state.balanceX : state.balanceY;
+  const outputBalance = state.swapDirection ? state.balanceY : state.balanceX;
+  const inputDecimals = state.swapDirection ? CONFIG.tokenX.decimals : CONFIG.tokenY.decimals;
+  const outputDecimals = state.swapDirection ? CONFIG.tokenY.decimals : CONFIG.tokenX.decimals;
+  const inputSymbol = state.swapDirection ? CONFIG.tokenX.symbol : CONFIG.tokenY.symbol;
+  const outputSymbol = state.swapDirection ? CONFIG.tokenY.symbol : CONFIG.tokenX.symbol;
+  
+  if (elements.balanceX) {
+    elements.balanceX.textContent = `Balance: ${formatAmount(inputBalance, inputDecimals)} ${inputSymbol}`;
+  }
+  if (elements.balanceY) {
+    elements.balanceY.textContent = `Balance: ${formatAmount(outputBalance, outputDecimals)} ${outputSymbol}`;
+  }
+}
+
+function updateSwapDetails() {
+  const inputAmount = parseFloat(elements.inputAmount.value) || 0;
+  
+  // Get correct reserves based on swap direction
+  const reserveIn = state.swapDirection ? state.reserveX : state.reserveY;
+  const reserveOut = state.swapDirection ? state.reserveY : state.reserveX;
+  const inputDecimals = state.swapDirection ? CONFIG.tokenX.decimals : CONFIG.tokenY.decimals;
+  const outputDecimals = state.swapDirection ? CONFIG.tokenY.decimals : CONFIG.tokenX.decimals;
+  const inputSymbol = state.swapDirection ? CONFIG.tokenX.symbol : CONFIG.tokenY.symbol;
+  const outputSymbol = state.swapDirection ? CONFIG.tokenY.symbol : CONFIG.tokenX.symbol;
+  
+  if (inputAmount > 0 && reserveIn > 0 && reserveOut > 0) {
+    const amountIn = parseAmount(inputAmount.toString(), inputDecimals);
+    const outputAmount = calculateSwapOutput(amountIn, reserveIn, reserveOut);
+    const priceImpact = calculatePriceImpact(amountIn, reserveIn, reserveOut);
+    const minReceived = outputAmount * (1 - state.slippage / 100);
+    const fee = (inputAmount * CONFIG.feeBps) / CONFIG.bpsDenom;
+    
+    elements.outputAmount.value = formatAmount(outputAmount, outputDecimals);
+    
+    if (elements.exchangeRate) {
+      const rate = outputAmount / amountIn;
+      elements.exchangeRate.textContent = `1 ${inputSymbol} = ${(rate * Math.pow(10, inputDecimals - outputDecimals)).toFixed(6)} ${outputSymbol}`;
+    }
+    if (elements.dexFee) {
+      elements.dexFee.textContent = `${fee.toFixed(6)} ${inputSymbol}`;
+    }
+    if (elements.minReceived) {
+      elements.minReceived.textContent = `${formatAmount(minReceived, outputDecimals)} ${outputSymbol}`;
+    }
+    if (elements.priceImpact) {
+      elements.priceImpact.textContent = `${priceImpact.toFixed(2)}%`;
+      elements.priceImpact.className = priceImpact > 5 ? 'warning' : '';
+    }
+    if (elements.slippageDisplay) {
+      elements.slippageDisplay.textContent = `${state.slippage}%`;
+    }
+    
+    elements.swapDetails.classList.remove('hidden');
+  } else {
+    elements.outputAmount.value = '';
+    elements.swapDetails.classList.add('hidden');
+  }
+}
+
+function switchSwapDirection() {
+  state.swapDirection = !state.swapDirection;
+  
+  // Swap input/output values
+  const inputVal = elements.inputAmount.value;
+  const outputVal = elements.outputAmount.value;
+  elements.inputAmount.value = outputVal;
+  elements.outputAmount.value = inputVal;
+  
+  updateTokenDisplay();
+  updateBalanceDisplay();
+  updateSwapDetails();
+  
+  // Animate the button
+  if (elements.swapDirectionBtn) {
+    elements.swapDirectionBtn.classList.add('rotating');
+    setTimeout(() => elements.swapDirectionBtn.classList.remove('rotating'), 300);
+  }
+}
+
+// ==============================================================================
+// SWAP EXECUTION
+// ==============================================================================
+
 async function executeSwap() {
   if (!state.connected || !state.address) {
     showStatus('Please connect wallet first', 'error');
     return;
   }
 
-  const dx = parseAmount(state.inputAmount, CONFIG.tokenX.decimals);
-  if (dx <= 0) {
+  const inputAmount = parseFloat(elements.inputAmount.value);
+  if (!inputAmount || inputAmount <= 0) {
     showStatus('Please enter a valid amount', 'error');
     return;
   }
 
-  const dy = calculateQuote(dx);
-  if (dy <= 0) {
-    showStatus('Unable to calculate output', 'error');
-    return;
-  }
+  // Get reserves based on swap direction
+  const reserveIn = state.swapDirection ? state.reserveX : state.reserveY;
+  const reserveOut = state.swapDirection ? state.reserveY : state.reserveX;
+  const inputDecimals = state.swapDirection ? CONFIG.tokenX.decimals : CONFIG.tokenY.decimals;
+  const outputDecimals = state.swapDirection ? CONFIG.tokenY.decimals : CONFIG.tokenX.decimals;
+  const inputToken = state.swapDirection ? CONFIG.tokenX : CONFIG.tokenY;
+  const outputToken = state.swapDirection ? CONFIG.tokenY : CONFIG.tokenX;
+  const functionName = state.swapDirection ? 'swap-x-for-y' : 'swap-y-for-x';
 
-  // Calculate minimum output with slippage
-  const minDy = Math.floor(dy * (1 - state.slippage / 100));
+  const amountIn = parseAmount(inputAmount.toString(), inputDecimals);
+  const expectedOutput = calculateSwapOutput(amountIn, reserveIn, reserveOut);
+  const minAmountOut = Math.floor(expectedOutput * (1 - state.slippage / 100));
 
-  // Fetch current block height for deadline
-  let deadline;
+  // Calculate deadline
   try {
-    const apiUrl = CONFIG.network === 'mainnet'
-      ? 'https://api.mainnet.hiro.so'
-      : 'https://api.testnet.hiro.so';
-    const blockResponse = await fetch(`${apiUrl}/v2/info`);
-    const blockData = await blockResponse.json();
-    deadline = blockData.stacks_tip_height + state.deadlineBlocks;
-  } catch {
-    deadline = 999999; // Fallback
+    const blockResponse = await fetch(
+      CONFIG.network === 'mainnet'
+        ? 'https://api.mainnet.hiro.so/v2/info'
+        : 'https://api.testnet.hiro.so/v2/info'
+    );
+    const blockInfo = await blockResponse.json();
+    state.currentBlockHeight = blockInfo.stacks_tip_height;
+  } catch (e) {
+    console.error('Failed to fetch block height:', e);
   }
+  
+  const deadline = state.currentBlockHeight + state.deadlineBlocks;
 
-  showStatus('Building transaction...', 'pending');
+  showStatus('Preparing swap...', 'pending');
 
   try {
-    // Build post-conditions for user protection
+    // Build post-conditions for safety
     const postConditions = [
-      // User sends exactly dx of token X
       makeStandardFungiblePostCondition(
         state.address,
         FungibleConditionCode.Equal,
-        BigInt(dx),
-        `${CONFIG.tokenX.address}.${CONFIG.tokenX.name}::${CONFIG.tokenX.assetName}`
+        amountIn,
+        createAssetInfo(inputToken.address, inputToken.name, inputToken.assetName)
       )
     ];
 
-    // Build unsigned contract call transaction
-    const txOptions = {
+    // Build the unsigned transaction
+    const unsignedTx = await makeUnsignedContractCall({
       contractAddress: CONFIG.poolContract.address,
       contractName: CONFIG.poolContract.name,
-      functionName: 'swap-x-for-y',
+      functionName: functionName,
       functionArgs: [
-        principalCV(`${CONFIG.tokenX.address}.${CONFIG.tokenX.name}`),
-        principalCV(`${CONFIG.tokenY.address}.${CONFIG.tokenY.name}`),
-        uintCV(dx),
-        uintCV(minDy),
-        principalCV(state.address),
-        uintCV(deadline)
+        uintCV(amountIn),
+        uintCV(minAmountOut),
+        uintCV(deadline),
+        principalCV(`${inputToken.address}.${inputToken.name}`),
+        principalCV(`${outputToken.address}.${outputToken.name}`)
       ],
-      publicKey: state.address, // Will be filled by wallet
+      publicKey: state.address,
       network: stacksNetwork,
-      anchorMode: AnchorMode.Any,
       postConditionMode: PostConditionMode.Deny,
-      postConditions
-    };
+      postConditions: postConditions,
+      anchorMode: AnchorMode.Any
+    });
 
-    // Create unsigned transaction
-    const unsignedTx = await makeUnsignedContractCall(txOptions);
+    showStatus('Please confirm in wallet...', 'pending');
 
-    showStatus('Requesting signature...', 'pending');
-
-    // Sign via WalletConnect (stx_signTransaction)
+    // Sign and broadcast (routes to correct wallet)
     const txId = await signAndBroadcastTransaction(unsignedTx);
 
-    showStatus(`Transaction submitted! TxID: ${txId}`, 'success');
-    console.log('Swap transaction:', txId);
-
-    // Open explorer link
+    showStatus(`Swap submitted! TX: ${txId.slice(0, 10)}...`, 'success');
+    
+    // Open explorer
     const explorerUrl = CONFIG.network === 'mainnet'
-      ? `https://explorer.stacks.co/txid/${txId}`
-      : `https://explorer.stacks.co/txid/${txId}?chain=testnet`;
-    console.log('Explorer:', explorerUrl);
+      ? `https://explorer.hiro.so/txid/${txId}?chain=mainnet`
+      : `https://explorer.hiro.so/txid/${txId}?chain=testnet`;
+    window.open(explorerUrl, '_blank');
 
-    // Refresh balances after delay
+    // Clear inputs and refresh
+    elements.inputAmount.value = '';
+    elements.outputAmount.value = '';
+    elements.swapDetails.classList.add('hidden');
+
     setTimeout(async () => {
       await Promise.all([fetchBalances(), fetchReserves()]);
       hideStatus();
@@ -722,274 +1072,140 @@ async function executeSwap() {
 
   } catch (error) {
     console.error('Swap failed:', error);
-    showStatus(`Swap failed: ${error.message}`, 'error');
+    showStatus('Swap failed: ' + error.message, 'error');
     setTimeout(hideStatus, 5000);
   }
 }
 
-// ============================================================================
-// CLARITY VALUE HELPERS
-// ============================================================================
+// ==============================================================================
+// SETTINGS
+// ==============================================================================
 
-/**
- * Convert Clarity value to hex for API calls
- */
-function cvToHex(cv) {
-  const serialized = serializeCV(cv);
-  return '0x' + bytesToHex(serialized);
+function openSettings() {
+  elements.settingsModal.classList.remove('hidden');
 }
 
-/**
- * Serialize Clarity value (simplified)
- */
-function serializeCV(cv) {
-  // This is a simplified version - in production use @stacks/transactions
-  if (cv.type === 'principal') {
-    // Principal serialization
-    const encoder = new TextEncoder();
-    return encoder.encode(cv.address);
-  }
-  return new Uint8Array([]);
+function closeSettings() {
+  elements.settingsModal.classList.add('hidden');
 }
 
-/**
- * Parse Clarity uint from hex response
- */
-function parseClarityUint(hex) {
-  // Simplified parsing - in production use proper Clarity decoding
-  try {
-    const cleanHex = hex.startsWith('0x') ? hex.slice(2) : hex;
-    // Clarity uint starts with 01 type byte
-    if (cleanHex.startsWith('01')) {
-      const valueHex = cleanHex.slice(2);
-      return parseInt(valueHex, 16);
-    }
-    return 0;
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * Parse Clarity tuple value
- */
-function parseClarityValue(hex) {
-  // Simplified - in production use cvToJSON from @stacks/transactions
-  try {
-    return { x: 0, y: 0 };
-  } catch {
-    return { x: 0, y: 0 };
-  }
-}
-
-// ============================================================================
-// ============================================================================
-// SWAP DIRECTION TOGGLE
-// ============================================================================
-
-function switchSwapDirection() {
-  state.swapDirection = !state.swapDirection;
-  
-  const fromToken = state.swapDirection ? CONFIG.tokenX : CONFIG.tokenY;
-  const toToken = state.swapDirection ? CONFIG.tokenY : CONFIG.tokenX;
-  
-  if (elements.tokenXSymbol) elements.tokenXSymbol.textContent = fromToken.symbol;
-  if (elements.tokenYSymbol) elements.tokenYSymbol.textContent = toToken.symbol;
-  
-  const balanceFrom = state.swapDirection ? state.balanceX : state.balanceY;
-  const balanceTo = state.swapDirection ? state.balanceY : state.balanceX;
-  
-  if (elements.balanceX) elements.balanceX.textContent = formatAmount(balanceFrom, fromToken.decimals);
-  if (elements.balanceY) elements.balanceY.textContent = formatAmount(balanceTo, toToken.decimals);
-  
-  if (elements.inputAmount) elements.inputAmount.value = '';
-  if (elements.outputAmount) elements.outputAmount.value = '';
-  state.inputAmount = '';
-  state.outputAmount = '';
-  
-  updateSwapDetails();
-  console.log('Swap direction:', state.swapDirection ? 'X→Y' : 'Y→X');
-}
-
-// UI UPDATE FUNCTIONS
-// ============================================================================
-
-function updateUI() {
-  if (state.connected) {
-    elements.walletStatus.classList.add('hidden');
-    elements.walletInfo.classList.remove('hidden');
-    elements.walletAddress.textContent = truncateAddress(state.address);
-    elements.swapBtn.textContent = 'Swap';
-    elements.swapBtn.disabled = !state.inputAmount;
-  } else {
-    elements.walletStatus.classList.remove('hidden');
-    elements.walletInfo.classList.add('hidden');
-    elements.swapBtn.textContent = 'Connect Wallet';
-    elements.swapBtn.disabled = false;
-  }
-  
-  updateBalanceDisplay();
-  updateSwapDetails();
-}
-
-function updateBalanceDisplay() {
-  elements.balanceX.textContent = formatAmount(state.balanceX, CONFIG.tokenX.decimals);
-  elements.balanceY.textContent = formatAmount(state.balanceY, CONFIG.tokenY.decimals);
-}
-
-function updateSwapDetails() {
-  const dx = parseAmount(state.inputAmount, CONFIG.tokenX.decimals);
-  
-  if (dx <= 0) {
-    elements.swapDetails.classList.add('hidden');
-    elements.outputAmount.value = '';
-    state.outputAmount = '';
-    return;
-  }
-
-  const dy = calculateQuote(dx);
-  if (dy <= 0) {
-    elements.swapDetails.classList.add('hidden');
-    elements.outputAmount.value = '';
-    state.outputAmount = '';
-    return;
-  }
-
-  state.outputAmount = formatAmount(dy, CONFIG.tokenY.decimals);
-  elements.outputAmount.value = state.outputAmount;
-
-  // Calculate details
-  const fee = Math.floor((dx * CONFIG.feeBps) / CONFIG.bpsDenom);
-  const minDy = Math.floor(dy * (1 - state.slippage / 100));
-  const rate = dy / dx;
-
-  // Price impact
-  const spotPrice = state.reserveY / state.reserveX;
-  const executionPrice = dy / dx;
-  const priceImpact = spotPrice > 0 ? ((spotPrice - executionPrice) / spotPrice * 100).toFixed(2) : '0.00';
-
-  elements.exchangeRate.textContent = `1 ${CONFIG.tokenX.symbol} = ${rate.toFixed(6)} ${CONFIG.tokenY.symbol}`;
-  elements.dexFee.textContent = `${formatAmount(fee, CONFIG.tokenX.decimals)} ${CONFIG.tokenX.symbol}`;
-  elements.minReceived.textContent = `${formatAmount(minDy, CONFIG.tokenY.decimals)} ${CONFIG.tokenY.symbol}`;
-  elements.slippageDisplay.textContent = `${state.slippage}%`;
-  elements.priceImpact.textContent = `${priceImpact}%`;
-
-  elements.swapDetails.classList.remove('hidden');
-
-  if (state.connected) {
-    if (dx > state.balanceX) {
-      elements.swapBtn.textContent = 'Insufficient Balance';
-      elements.swapBtn.disabled = true;
-    } else {
-      elements.swapBtn.textContent = 'Swap';
-      elements.swapBtn.disabled = false;
-    }
-  }
-}
-
-// ============================================================================
-// EVENT HANDLERS
-// ============================================================================
-
-let quoteDebounceTimer;
-function handleInputChange(e) {
-  state.inputAmount = e.target.value;
-  clearTimeout(quoteDebounceTimer);
-  quoteDebounceTimer = setTimeout(() => {
-    updateSwapDetails();
-  }, 300);
-}
-
-function handleMaxClick() {
-  if (!state.connected) return;
-  state.inputAmount = formatAmount(state.balanceX, CONFIG.tokenX.decimals);
-  elements.inputAmount.value = state.inputAmount;
-  updateSwapDetails();
-}
-
-function handleSwapClick() {
-  if (!state.connected) {
-    connectWallet();
-  } else {
-    executeSwap();
-  }
-}
-
-function handleSlippageSelect(e) {
-  const value = parseFloat(e.target.dataset.value);
-  if (isNaN(value)) return;
-  state.slippage = value;
-  elements.slippageBtns.forEach(btn => btn.classList.remove('active'));
-  e.target.classList.add('active');
+function setSlippage(value) {
+  state.slippage = parseFloat(value);
+  elements.slippageBtns.forEach(btn => {
+    btn.classList.toggle('active', parseFloat(btn.dataset.value) === state.slippage);
+  });
   elements.customSlippage.value = '';
-  elements.slippageDisplay.textContent = `${value}%`;
   updateSwapDetails();
 }
 
-function handleCustomSlippage(e) {
-  const value = parseFloat(e.target.value);
-  if (isNaN(value) || value < 0.01 || value > 50) return;
-  state.slippage = value;
-  elements.slippageBtns.forEach(btn => btn.classList.remove('active'));
-  elements.slippageDisplay.textContent = `${value}%`;
-  updateSwapDetails();
-}
-
-function handleDeadlineChange(e) {
-  const value = parseInt(e.target.value);
-  if (isNaN(value) || value < 1) return;
-  state.deadlineBlocks = value;
-}
-
-function toggleSettings(show) {
-  if (show) {
-    elements.settingsModal.classList.remove('hidden');
-  } else {
-    elements.settingsModal.classList.add('hidden');
+function setCustomSlippage(value) {
+  const slippage = parseFloat(value);
+  if (!isNaN(slippage) && slippage >= 0.01 && slippage <= 50) {
+    state.slippage = slippage;
+    elements.slippageBtns.forEach(btn => btn.classList.remove('active'));
+    updateSwapDetails();
   }
 }
 
-// ============================================================================
+function setDeadline(value) {
+  const blocks = parseInt(value);
+  if (!isNaN(blocks) && blocks >= 1 && blocks <= 100) {
+    state.deadlineBlocks = blocks;
+  }
+}
+
+// ==============================================================================
+// EVENT LISTENERS
+// ==============================================================================
+
+function initEventListeners() {
+  // Wallet connection
+  elements.connectBtn?.addEventListener('click', connectWallet);
+  elements.disconnectBtn?.addEventListener('click', disconnectWallet);
+  
+  // Swap direction toggle
+  elements.swapDirectionBtn?.addEventListener('click', switchSwapDirection);
+  
+  // Swap inputs
+  elements.inputAmount?.addEventListener('input', updateSwapDetails);
+  
+  // Max button
+  elements.maxBtn?.addEventListener('click', () => {
+    const maxBalance = state.swapDirection ? state.balanceX : state.balanceY;
+    const decimals = state.swapDirection ? CONFIG.tokenX.decimals : CONFIG.tokenY.decimals;
+    elements.inputAmount.value = formatAmount(maxBalance, decimals).replace(/,/g, '');
+    updateSwapDetails();
+  });
+  
+  // Swap button
+  elements.swapBtn?.addEventListener('click', executeSwap);
+  
+  // Settings
+  elements.settingsBtn?.addEventListener('click', openSettings);
+  elements.closeSettings?.addEventListener('click', closeSettings);
+  
+  elements.slippageBtns?.forEach(btn => {
+    btn.addEventListener('click', () => setSlippage(btn.dataset.value));
+  });
+  
+  elements.customSlippage?.addEventListener('input', (e) => setCustomSlippage(e.target.value));
+  elements.deadlineBlocks?.addEventListener('input', (e) => setDeadline(e.target.value));
+  
+  // Close settings on backdrop click
+  elements.settingsModal?.addEventListener('click', (e) => {
+    if (e.target === elements.settingsModal) closeSettings();
+  });
+  
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeSettings();
+      closeWalletModal();
+      closeQRModal();
+    }
+  });
+}
+
+// ==============================================================================
 // INITIALIZATION
-// ============================================================================
+// ==============================================================================
 
 async function init() {
   console.log('Initializing Stacks DEX...');
-  console.log('Network:', CONFIG.network);
-  console.log('Pool contract:', `${CONFIG.poolContract.address}.${CONFIG.poolContract.name}`);
-
-  // Initialize REOWN AppKit
-  await initializeWalletConnect();
-
-  // Fetch initial reserves
-  await fetchReserves();
-
-  // Update UI
+  console.log('Detected wallets:', detectWallets().map(w => w.name));
+  
+  initEventListeners();
   updateUI();
-
-  // Set up event listeners
-  elements.connectBtn.addEventListener('click', connectWallet);
-  elements.disconnectBtn.addEventListener('click', disconnectWallet);
-  elements.inputAmount.addEventListener('input', handleInputChange);
-  elements.maxBtn.addEventListener('click', handleMaxClick);
-  elements.swapBtn.addEventListener('click', handleSwapClick);
-  elements.settingsBtn.addEventListener('click', () => toggleSettings(true));
-  elements.closeSettings.addEventListener('click', () => toggleSettings(false));
-  elements.customSlippage.addEventListener('input', handleCustomSlippage);
-  elements.deadlineBlocks.addEventListener('input', handleDeadlineChange);
-
-  elements.slippageBtns.forEach(btn => {
-    btn.addEventListener('click', handleSlippageSelect);
-  });
-
-  elements.settingsModal.addEventListener('click', (e) => {
-    if (e.target === elements.settingsModal) {
-      toggleSettings(false);
+  
+  // Fetch initial data
+  await fetchReserves();
+  
+  // Check for existing WalletConnect session
+  try {
+    await initializeWalletConnect();
+    if (universalProvider?.session) {
+      state.providerType = 'walletconnect';
+      state.provider = universalProvider;
+      state.session = universalProvider.session;
+      
+      const response = await universalProvider.request({
+        method: 'stx_getAddresses',
+        params: {}
+      }, STACKS_CHAIN_ID);
+      
+      if (response?.addresses?.[0]?.address) {
+        state.address = response.addresses[0].address;
+        state.connected = true;
+        updateUI();
+        await fetchBalances();
+      }
     }
-  });
-
-  console.log('Stacks DEX initialized');
+  } catch (e) {
+    console.log('No existing session');
+  }
+  
+  console.log('DEX initialized');
 }
 
-// Start the app
-init();
+// Start app
+document.addEventListener('DOMContentLoaded', init);
