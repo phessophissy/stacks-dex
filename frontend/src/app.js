@@ -288,6 +288,28 @@ async function initializeAppKit() {
     });
 
     console.log('REOWN AppKit initialized');
+
+    // Subscribe to AppKit provider events for connection state
+    appKit.subscribeProvider((providerState) => {
+      console.log('AppKit provider state:', providerState);
+      
+      if (providerState.isConnected && providerState.address) {
+        // Connected via AppKit
+        state.connected = true;
+        state.address = providerState.address;
+        state.provider = universalProvider;
+        state.session = universalProvider.session;
+        
+        hideStatus();
+        updateUI();
+        
+        // Fetch balances
+        Promise.all([fetchBalances(), fetchReserves()]).catch(console.error);
+      } else if (!providerState.isConnected && state.connected) {
+        // Disconnected
+        handleDisconnect();
+      }
+    });
     
     // Check for existing session
     if (universalProvider.session) {
@@ -305,22 +327,32 @@ async function initializeAppKit() {
 // ============================================================================
 
 /**
- * Connect wallet using REOWN AppKit + WalletConnect
- * Requests Stacks addresses via stx_getAddresses
+ * Connect wallet using REOWN AppKit modal
+ * Opens the AppKit modal for wallet selection and connection
  */
 async function connectWallet() {
   try {
-    showStatus('Connecting wallet...', 'pending');
+    showStatus('Opening wallet...', 'pending');
 
-    // Connect via WalletConnect with Stacks namespace
+    // Ensure AppKit is initialized
+    if (!appKit) {
+      await initializeAppKit();
+    }
+
+    // Open REOWN AppKit modal for wallet connection
+    if (appKit && typeof appKit.open === 'function') {
+      console.log('Opening REOWN AppKit modal...');
+      await appKit.open();
+      hideStatus();
+      return; // AppKit will handle connection via subscribeProvider
+    }
+
+    // Fallback: Connect directly via WalletConnect Universal Provider
+    console.log('Fallback: Direct WalletConnect connection');
     const session = await universalProvider.connect({
       namespaces: {
         stacks: {
-          methods: [
-            'stx_getAddresses',
-            'stx_signTransaction',
-            'stx_signMessage'
-          ],
+          methods: ['stx_getAddresses', 'stx_signTransaction', 'stx_signMessage'],
           chains: [STACKS_CHAIN_ID],
           events: ['accountsChanged', 'chainChanged']
         }
@@ -329,20 +361,15 @@ async function connectWallet() {
 
     state.session = session;
     state.provider = universalProvider;
-
-    // Get Stacks addresses using stx_getAddresses
     await getStacksAddresses();
-
     state.connected = true;
     hideStatus();
     updateUI();
-    
-    // Fetch balances and reserves
     await Promise.all([fetchBalances(), fetchReserves()]);
 
   } catch (error) {
     console.error('Connection failed:', error);
-    showStatus(`Connection failed: ${error.message}`, 'error');
+    showStatus('Connection failed: ' + error.message, 'error');
     setTimeout(hideStatus, 3000);
   }
 }
