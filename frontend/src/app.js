@@ -61,8 +61,8 @@ const CONFIG = {
   
   // Token pair
   tokenX: {
-    address: 'SP3K8BC0PPEVCV7NZ6QSRWPQ2JE9E5B6N3PA0KBR9',
-    name: 'age000-governance-token',
+    address: 'SP102V8P0F7JX67ARQ77WEA3D3CFB5XW39REDT0AM',
+    name: 'token-alex',
     symbol: 'ALEX',
     decimals: 8,
     assetName: 'alex'
@@ -346,7 +346,52 @@ async function connectWithLeather() {
 }
 
 /**
- * Sign transaction with Leather
+ * Execute contract call with Leather using stx_callContract
+ */
+async function executeWithLeather(swapParams) {
+  const { functionName, amountIn, minAmountOut, deadline, inputToken, outputToken, postConditions } = swapParams;
+  
+  // Serialize post-condition to hex for the wallet
+  // Leather handles post-conditions differently
+  const response = await window.LeatherProvider.request('stx_callContract', {
+    contract: `${CONFIG.poolContract.address}.${CONFIG.poolContract.name}`,
+    functionName: functionName,
+    functionArgs: [
+      { type: 'uint128', value: amountIn.toString() },
+      { type: 'uint128', value: minAmountOut.toString() },
+      { type: 'uint128', value: deadline.toString() },
+      { type: 'principal', value: `${inputToken.address}.${inputToken.name}` },
+      { type: 'principal', value: `${outputToken.address}.${outputToken.name}` }
+    ],
+    network: CONFIG.network,
+    postConditionMode: 'deny',
+    postConditions: [
+      {
+        type: 'ft-postcondition',
+        address: state.address,
+        conditionCode: 'eq',
+        amount: amountIn.toString(),
+        asset: `${inputToken.address}.${inputToken.name}::${inputToken.assetName}`
+      }
+    ]
+  });
+  
+  console.log('Leather contract call response:', response);
+  
+  if (response.result) {
+    if (response.result.txid) {
+      return response.result.txid;
+    }
+    if (response.result.txId) {
+      return response.result.txId;
+    }
+  }
+  
+  throw new Error('Contract call failed');
+}
+
+/**
+ * Sign pre-built transaction with Leather (fallback)
  */
 async function signWithLeather(unsignedTx) {
   const serializedTx = bytesToHex(unsignedTx.serialize());
@@ -359,11 +404,9 @@ async function signWithLeather(unsignedTx) {
   console.log('Leather sign response:', response);
   
   if (response.result) {
-    // If wallet broadcast, return txId
-    if (response.result.txId) {
-      return response.result.txId;
+    if (response.result.txId || response.result.txid) {
+      return response.result.txId || response.result.txid;
     }
-    // Otherwise, deserialize and broadcast
     const signedTxHex = response.result.transaction || response.result;
     const signedTx = deserializeTransaction(hexToBytes(signedTxHex));
     const broadcastResult = await broadcastTransaction(signedTx, stacksNetwork);
@@ -430,7 +473,50 @@ async function connectWithXverse() {
 }
 
 /**
- * Sign transaction with Xverse
+ * Execute contract call with Xverse
+ */
+async function executeWithXverse(swapParams) {
+  const { functionName, amountIn, minAmountOut, deadline, inputToken, outputToken } = swapParams;
+  const provider = window.XverseProviders?.StacksProvider;
+  
+  if (!provider) {
+    throw new Error('Xverse provider not available');
+  }
+  
+  const response = await provider.request('stx_callContract', {
+    contract: `${CONFIG.poolContract.address}.${CONFIG.poolContract.name}`,
+    functionName: functionName,
+    functionArgs: [
+      { type: 'uint128', value: amountIn.toString() },
+      { type: 'uint128', value: minAmountOut.toString() },
+      { type: 'uint128', value: deadline.toString() },
+      { type: 'principal', value: `${inputToken.address}.${inputToken.name}` },
+      { type: 'principal', value: `${outputToken.address}.${outputToken.name}` }
+    ],
+    network: CONFIG.network,
+    postConditionMode: 'deny',
+    postConditions: [
+      {
+        type: 'ft-postcondition',
+        address: state.address,
+        conditionCode: 'eq',
+        amount: amountIn.toString(),
+        asset: `${inputToken.address}.${inputToken.name}::${inputToken.assetName}`
+      }
+    ]
+  });
+  
+  console.log('Xverse contract call response:', response);
+  
+  if (response.result) {
+    return response.result.txid || response.result.txId;
+  }
+  
+  throw new Error('Contract call failed');
+}
+
+/**
+ * Sign transaction with Xverse (fallback)
  */
 async function signWithXverse(unsignedTx) {
   const provider = window.XverseProviders?.StacksProvider;
@@ -444,8 +530,8 @@ async function signWithXverse(unsignedTx) {
   console.log('Xverse sign response:', response);
   
   if (response.result) {
-    if (response.result.txId) {
-      return response.result.txId;
+    if (response.result.txId || response.result.txid) {
+      return response.result.txId || response.result.txid;
     }
     const signedTxHex = response.result.transaction || response.result;
     const signedTx = deserializeTransaction(hexToBytes(signedTxHex));
@@ -1018,39 +1104,59 @@ async function executeSwap() {
   showStatus('Preparing swap...', 'pending');
 
   try {
-    // Build post-conditions for safety
-    const postConditions = [
-      makeStandardFungiblePostCondition(
-        state.address,
-        FungibleConditionCode.Equal,
-        amountIn,
-        createAssetInfo(inputToken.address, inputToken.name, inputToken.assetName)
-      )
-    ];
-
-    // Build the unsigned transaction
-    const unsignedTx = await makeUnsignedContractCall({
-      contractAddress: CONFIG.poolContract.address,
-      contractName: CONFIG.poolContract.name,
-      functionName: functionName,
-      functionArgs: [
-        uintCV(amountIn),
-        uintCV(minAmountOut),
-        uintCV(deadline),
-        principalCV(`${inputToken.address}.${inputToken.name}`),
-        principalCV(`${outputToken.address}.${outputToken.name}`)
-      ],
-      publicKey: state.address,
-      network: stacksNetwork,
-      postConditionMode: PostConditionMode.Deny,
-      postConditions: postConditions,
-      anchorMode: AnchorMode.Any
-    });
+    // Create swap parameters
+    const swapParams = {
+      functionName,
+      amountIn,
+      minAmountOut,
+      deadline,
+      inputToken,
+      outputToken
+    };
 
     showStatus('Please confirm in wallet...', 'pending');
 
-    // Sign and broadcast (routes to correct wallet)
-    const txId = await signAndBroadcastTransaction(unsignedTx);
+    let txId;
+    
+    // Route to appropriate execution method based on wallet type
+    if (state.providerType === 'leather') {
+      // Use Leather's native stx_callContract
+      txId = await executeWithLeather(swapParams);
+    } else if (state.providerType === 'xverse') {
+      // Use Xverse's native method
+      txId = await executeWithXverse(swapParams);
+    } else {
+      // Build transaction for WalletConnect
+      const postConditions = [
+        makeStandardFungiblePostCondition(
+          state.address,
+          FungibleConditionCode.Equal,
+          amountIn,
+          createAssetInfo(inputToken.address, inputToken.name, inputToken.assetName)
+        )
+      ];
+
+      const txOptions = {
+        contractAddress: CONFIG.poolContract.address,
+        contractName: CONFIG.poolContract.name,
+        functionName: functionName,
+        functionArgs: [
+          uintCV(amountIn),
+          uintCV(minAmountOut),
+          uintCV(deadline),
+          principalCV(`${inputToken.address}.${inputToken.name}`),
+          principalCV(`${outputToken.address}.${outputToken.name}`)
+        ],
+        network: stacksNetwork,
+        postConditionMode: PostConditionMode.Deny,
+        postConditions: postConditions,
+        anchorMode: AnchorMode.Any,
+        fee: 10000
+      };
+
+      const unsignedTx = await makeUnsignedContractCall(txOptions);
+      txId = await signWithWalletConnect(unsignedTx);
+    }
 
     showStatus(`Swap submitted! TX: ${txId.slice(0, 10)}...`, 'success');
     
