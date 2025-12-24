@@ -59,8 +59,6 @@
       font-weight: 600;
       cursor: pointer;
       margin-top: 8px;
-      position: relative;
-      z-index: 10;
     }
     .btn:hover { background: #ff9f2e; }
     .btn:disabled { background: #333; color: #666; cursor: not-allowed; }
@@ -101,7 +99,7 @@
 
     <div id="wallet-status"></div>
 
-    <button id="connect-btn" class="btn btn-secondary" onclick="connectWallet()">Connect Leather Wallet</button>
+    <button id="connect-btn" class="btn btn-secondary">Connect Leather Wallet</button>
 
     <div id="init-form" style="display: none;">
       <div class="form-group">
@@ -116,20 +114,25 @@
         <p class="helper">Your USDA tokens to add as initial liquidity (6 decimals)</p>
       </div>
 
-      <button id="init-btn" class="btn" onclick="initializePool()">Initialize Pool</button>
+      <button id="init-btn" class="btn">Initialize Pool</button>
     </div>
 
     <div id="status" class="status"></div>
   </div>
 
-  <script src="https://unpkg.com/@stacks/transactions@6.13.0/dist/umd/index.js"></script>
-  <script>
-    const { uintCV, contractPrincipalCV, serializeCV, bytesToHex } = StacksTransactions;
+  <script type="module">
+    // Use ESM imports
+    import { uintCV, contractPrincipalCV, serializeCV } from 'https://esm.sh/@stacks/transactions@6.13.0';
+    
+    // Helper to convert Uint8Array to hex
+    function bytesToHex(bytes) {
+      return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
 
     const CONFIG = {
       poolContract: { address: 'SP31G2FZ5JN87BATZMP4ZRYE5F7WZQDNEXJ7G7X97', name: 'pool' },
-      tokenX: { address: 'SP102V8P0F7JX67ARQ77WEA3D3CFB5XW39REDT0AM', name: 'token-alex', decimals: 8, assetName: 'alex' },
-      tokenY: { address: 'SP2C2YFP12AJZB4MABJBAJ55XECVS7E4PMMZ89YZR', name: 'usda-token', decimals: 6, assetName: 'usda' }
+      tokenX: { address: 'SP102V8P0F7JX67ARQ77WEA3D3CFB5XW39REDT0AM', name: 'token-alex', decimals: 8 },
+      tokenY: { address: 'SP2C2YFP12AJZB4MABJBAJ55XECVS7E4PMMZ89YZR', name: 'usda-token', decimals: 6 }
     };
 
     let userAddress = null;
@@ -140,7 +143,7 @@
       el.className = 'status show ' + type;
     }
 
-    async function connectWallet() {
+    window.connectWallet = async function() {
       console.log('Connect wallet clicked');
       
       if (!window.LeatherProvider) {
@@ -173,9 +176,9 @@
         console.error('Connection error:', err);
         showStatus('Connection failed: ' + err.message, 'error');
       }
-    }
+    };
 
-    async function initializePool() {
+    window.initializePool = async function() {
       console.log('Initialize pool clicked');
       
       if (!userAddress) {
@@ -233,9 +236,12 @@
         console.error('Initialize error:', err);
         showStatus('Error: ' + err.message, 'error');
       }
-    }
+    };
 
-    // Log when page loads
+    // Attach event listeners after module loads
+    document.getElementById('connect-btn').addEventListener('click', window.connectWallet);
+    document.getElementById('init-btn').addEventListener('click', window.initializePool);
+    
     console.log('Init pool page loaded');
     console.log('Leather provider:', window.LeatherProvider ? 'Found' : 'Not found');
   </script>
