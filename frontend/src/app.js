@@ -59,7 +59,7 @@ const CONFIG = {
   // Pool contract - V3 with bidirectional swaps
   poolContract: {
     address: 'SP31G2FZ5JN87BATZMP4ZRYE5F7WZQDNEXJ7G7X97',
-    name: 'pool-v3'
+    name: 'pool-lp'
   },
   
   // Token pair
