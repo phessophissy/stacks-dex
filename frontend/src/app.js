@@ -950,11 +950,13 @@ function updateUI() {
     elements.walletInfo.classList.remove('hidden');
     elements.walletAddress.textContent = truncateAddress(state.address);
     elements.swapBtn.disabled = false;
+    elements.swapBtn.textContent = 'Swap';
   } else {
     elements.connectBtn.classList.remove('hidden');
     elements.walletInfo.classList.add('hidden');
     elements.walletAddress.textContent = '';
     elements.swapBtn.disabled = true;
+    elements.swapBtn.textContent = 'Connect Wallet';
   }
   
   updateBalanceDisplay();
