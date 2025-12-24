@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Initialize Pool V3</title>
+  <style>
+    body { font-family: system-ui; background: #1a1a2e; color: #eee; padding: 40px; max-width: 800px; margin: 0 auto; }
+    h1 { color: #f7931a; }
+    button { background: #f7931a; color: #000; border: none; padding: 15px 30px; font-size: 18px; cursor: pointer; border-radius: 8px; margin: 10px 5px; }
+    button:hover { background: #ffa500; }
+    input { padding: 12px; font-size: 16px; border-radius: 8px; border: 1px solid #333; background: #16213e; color: #eee; width: 200px; margin: 5px; }
+    pre { background: #16213e; padding: 15px; border-radius: 8px; overflow-x: auto; font-size: 12px; max-height: 400px; overflow-y: auto; white-space: pre-wrap; }
+    .status { padding: 15px; border-radius: 8px; margin: 15px 0; }
+    .success { background: #1a4d2e; border: 1px solid #2ecc71; }
+    .error { background: #4d1a1a; border: 1px solid #e74c3c; }
+    .pending { background: #4d4d1a; border: 1px solid #f1c40f; }
+    .info { background: #1a3d4d; padding: 15px; border-radius: 8px; margin: 15px 0; }
+    label { display: block; margin: 10px 0 5px; }
+  </style>
+</head>
+<body>
+  <h1>🏊 Initialize Pool V3</h1>
+  
+  <div class="info">
+    <h3>Pool V3 Contract:</h3>
+    <code>SP31G2FZ5JN87BATZMP4ZRYE5F7WZQDNEXJ7G7X97.pool-v3</code>
+    <p>Initialize with ALEX (X) and USDA (Y) tokens.</p>
+  </div>
+
+  <div>
+    <label>ALEX Amount (token has 8 decimals):</label>
+    <input type="number" id="alexAmount" value="100" placeholder="ALEX amount"> 
+    <small>e.g., 100 = 100 ALEX</small>
+  </div>
+  
+  <div>
+    <label>USDA Amount (token has 6 decimals):</label>
+    <input type="number" id="usdaAmount" value="1" placeholder="USDA amount">
+    <small>e.g., 1 = 1 USDA</small>
+  </div>
+
+  <button id="initBtn">Initialize Pool V3</button>
+  
+  <div id="status"></div>
+  <pre id="output">Enter amounts and click "Initialize Pool V3"...</pre>
+
+  <script type="module">
+    import { 
+      uintCV, 
+      contractPrincipalCV, 
+      serializeCV,
+      cvToHex
+    } from 'https://esm.sh/@stacks/transactions@6.13.0';
+
+    const CONFIG = {
+      poolContract: 'SP31G2FZ5JN87BATZMP4ZRYE5F7WZQDNEXJ7G7X97.pool-v3',
+      alexToken: 'SP102V8P0F7JX67ARQ77WEA3D3CFB5XW39REDT0AM.token-alex',
+      usdaToken: 'SP2C2YFP12AJZB4MABJBAJ55XECVS7E4PMMZ89YZR.usda-token',
+      alexDecimals: 8,
+      usdaDecimals: 6,
+    };
+
+    const statusEl = document.getElementById('status');
+    const outputEl = document.getElementById('output');
+    const initBtn = document.getElementById('initBtn');
+
+    initBtn.addEventListener('click', async function() {
+      const alexAmount = parseFloat(document.getElementById('alexAmount').value);
+      const usdaAmount = parseFloat(document.getElementById('usdaAmount').value);
+
+      if (!alexAmount || !usdaAmount || alexAmount <= 0 || usdaAmount <= 0) {
+        statusEl.innerHTML = '<div class="status error">Please enter valid amounts</div>';
+        return;
+      }
+
+      // Convert to smallest units
+      const alexUnits = Math.floor(alexAmount * Math.pow(10, CONFIG.alexDecimals));
+      const usdaUnits = Math.floor(usdaAmount * Math.pow(10, CONFIG.usdaDecimals));
+
+      outputEl.textContent = 'Starting pool initialization...\n';
+      outputEl.textContent += 'ALEX: ' + alexAmount + ' (' + alexUnits + ' units)\n';
+      outputEl.textContent += 'USDA: ' + usdaAmount + ' (' + usdaUnits + ' units)\n\n';
+
+      if (!window.LeatherProvider) {
+        statusEl.innerHTML = '<div class="status error">❌ Leather wallet not found</div>';
+        return;
+      }
+
+      outputEl.textContent += '✓ Leather wallet detected\n';
+
+      try {
+        const addressResponse = await window.LeatherProvider.request('getAddresses');
+        const stacksAddress = addressResponse.result.addresses.find(function(a) {
+          return a.type === 'stacks' || (a.address && (a.address.startsWith('SP') || a.address.startsWith('SM')));
+        });
+
+        if (!stacksAddress) {
+          throw new Error('No Stacks address found');
+        }
+
+        const senderAddress = stacksAddress.address;
+        outputEl.textContent += '✓ Connected: ' + senderAddress + '\n\n';
+
+        statusEl.innerHTML = '<div class="status pending">Please confirm the transaction in Leather...</div>';
+        outputEl.textContent += 'Calling initialize-pool on pool-v3...\n';
+
+        // Build Clarity values and convert to hex
+        const tokenXCV = contractPrincipalCV('SP102V8P0F7JX67ARQ77WEA3D3CFB5XW39REDT0AM', 'token-alex');
+        const tokenYCV = contractPrincipalCV('SP2C2YFP12AJZB4MABJBAJ55XECVS7E4PMMZ89YZR', 'usda-token');
+        const amountXCV = uintCV(alexUnits);
+        const amountYCV = uintCV(usdaUnits);
+
+        const response = await window.LeatherProvider.request('stx_callContract', {
+          contract: CONFIG.poolContract,
+          functionName: 'initialize-pool',
+          functionArgs: [
+            cvToHex(tokenXCV),
+            cvToHex(tokenYCV),
+            cvToHex(amountXCV),
+            cvToHex(amountYCV),
+          ],
+          network: 'mainnet',
+          postConditionMode: 'allow',
+        });
+
+        console.log('Init response:', response);
+
+        if (response.result && response.result.txid) {
+          const txId = response.result.txid;
+          statusEl.innerHTML = '<div class="status success">✅ Pool initialization submitted!</div>';
+          outputEl.textContent += '\n✅ SUCCESS!\n';
+          outputEl.textContent += 'Transaction ID: ' + txId + '\n\n';
+          outputEl.textContent += 'View on explorer:\nhttps://explorer.hiro.so/txid/' + txId + '?chain=mainnet\n\n';
+          outputEl.textContent += '⏳ Wait for confirmation, then you can swap on the main DEX page!';
+        } else {
+          throw new Error('No transaction ID: ' + JSON.stringify(response));
+        }
+
+      } catch (error) {
+        console.error('Init error:', error);
+        statusEl.innerHTML = '<div class="status error">Error: ' + (error.message || 'Unknown error') + '</div>';
+        outputEl.textContent += '\n❌ Error: ' + (error.message || JSON.stringify(error)) + '\n';
+      }
+    });
+  </script>
+</body>
+</html>

@@ -32,6 +32,8 @@ import {
   makeUnsignedContractCall,
   uintCV,
   principalCV,
+  contractPrincipalCV,
+  standardPrincipalCV,
   PostConditionMode,
   FungibleConditionCode,
   makeStandardFungiblePostCondition,
@@ -41,6 +43,7 @@ import {
   createAssetInfo
 } from '@stacks/transactions';
 import { StacksMainnet, StacksTestnet } from '@stacks/network';
+import { openContractCall } from '@stacks/connect';
 
 // ==============================================================================
 // CONFIGURATION
@@ -53,10 +56,10 @@ const CONFIG = {
   // REOWN AppKit Project ID
   projectId: '904d5b805622ae67732d359178980e74',
   
-  // Pool contract
+  // Pool contract - V3 with bidirectional swaps
   poolContract: {
     address: 'SP31G2FZ5JN87BATZMP4ZRYE5F7WZQDNEXJ7G7X97',
-    name: 'pool'
+    name: 'pool-v3'
   },
   
   // Token pair
@@ -346,48 +349,50 @@ async function connectWithLeather() {
 }
 
 /**
- * Execute contract call with Leather using stx_callContract
+ * Execute contract call with Leather using @stacks/connect openContractCall
+ * This is the standard way to interact with Leather wallet
+ * 
+ * swap-x-for-y signature:
+ *   (token-x trait_reference, token-y trait_reference, dx uint128, min-dy uint128, recipient principal, deadline uint128)
  */
 async function executeWithLeather(swapParams) {
-  const { functionName, amountIn, minAmountOut, deadline, inputToken, outputToken, postConditions } = swapParams;
+  const { functionName, amountIn, minAmountOut, deadline, inputToken, outputToken } = swapParams;
   
-  // Serialize post-condition to hex for the wallet
-  // Leather handles post-conditions differently
-  const response = await window.LeatherProvider.request('stx_callContract', {
-    contract: `${CONFIG.poolContract.address}.${CONFIG.poolContract.name}`,
-    functionName: functionName,
-    functionArgs: [
-      { type: 'uint128', value: amountIn.toString() },
-      { type: 'uint128', value: minAmountOut.toString() },
-      { type: 'uint128', value: deadline.toString() },
-      { type: 'principal', value: `${inputToken.address}.${inputToken.name}` },
-      { type: 'principal', value: `${outputToken.address}.${outputToken.name}` }
-    ],
-    network: CONFIG.network,
-    postConditionMode: 'deny',
-    postConditions: [
-      {
-        type: 'ft-postcondition',
-        address: state.address,
-        conditionCode: 'eq',
-        amount: amountIn.toString(),
-        asset: `${inputToken.address}.${inputToken.name}::${inputToken.assetName}`
-      }
-    ]
+  console.log('Executing Leather swap with @stacks/connect:', {
+    functionName,
+    amountIn: amountIn.toString(),
+    minAmountOut: minAmountOut.toString(),
+    deadline,
+    inputToken: `${inputToken.address}.${inputToken.name}`,
+    outputToken: `${outputToken.address}.${outputToken.name}`,
+    recipient: state.address
   });
   
-  console.log('Leather contract call response:', response);
-  
-  if (response.result) {
-    if (response.result.txid) {
-      return response.result.txid;
-    }
-    if (response.result.txId) {
-      return response.result.txId;
-    }
-  }
-  
-  throw new Error('Contract call failed');
+  return new Promise((resolve, reject) => {
+    openContractCall({
+      contractAddress: CONFIG.poolContract.address,
+      contractName: CONFIG.poolContract.name,
+      functionName: functionName,
+      functionArgs: [
+        contractPrincipalCV(inputToken.address, inputToken.name),
+        contractPrincipalCV(outputToken.address, outputToken.name),
+        uintCV(amountIn),
+        uintCV(minAmountOut),
+        standardPrincipalCV(state.address),
+        uintCV(deadline)
+      ],
+      network: stacksNetwork,
+      postConditionMode: PostConditionMode.Allow,
+      postConditions: [],
+      onFinish: (data) => {
+        console.log('Transaction finished:', data);
+        resolve(data.txId);
+      },
+      onCancel: () => {
+        reject(new Error('Transaction cancelled by user'));
+      }
+    });
+  });
 }
 
 /**
@@ -1066,6 +1071,12 @@ function switchSwapDirection() {
 async function executeSwap() {
   if (!state.connected || !state.address) {
     showStatus('Please connect wallet first', 'error');
+    return;
+  }
+
+  // Currently only ALEX → USDA is supported (swap-x-for-y)
+  if (!state.swapDirection) {
+    showStatus('USDA → ALEX swap not yet supported. Please swap ALEX → USDA instead.', 'error');
     return;
   }
 
