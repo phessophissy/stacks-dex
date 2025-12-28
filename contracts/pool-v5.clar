@@ -275,14 +275,118 @@
 
 ;; Contract info
 (define-read-only (get-contract-info)
-  { 
-    name: "stacks-dex-pool-v5", 
-    version: "4.0.0", 
-    fee-bps: FEE_BPS, 
-    fee-recipient: (var-get fee-recipient), 
-    reserve-x: (var-get reserve-x), 
+  {
+    name: "stacks-dex-pool-v5",
+    version: "4.0.0",
+    fee-bps: FEE_BPS,
+    fee-recipient: (var-get fee-recipient),
+    reserve-x: (var-get reserve-x),
     reserve-y: (var-get reserve-y),
     total-supply: (var-get total-supply),
     total-fees-x: (var-get total-fees-x),
     total-fees-y: (var-get total-fees-y)
   })
+
+;; Bulk Operations
+
+;; Bulk swap X for Y (up to 10 swaps in one transaction)
+(define-private (bulk-swap-x-for-y-internal
+  (swap-data {token-x: <ft-trait>, token-y: <ft-trait>, dx: uint, min-dy: uint, recipient: principal, deadline: uint}))
+  (let
+    (
+      (token-x (get token-x swap-data))
+      (token-y (get token-y swap-data))
+      (dx (get dx swap-data))
+      (min-dy (get min-dy swap-data))
+      (recipient (get recipient swap-data))
+      (deadline (get deadline swap-data))
+    )
+    ;; Call the main swap function
+    (swap-x-for-y token-x token-y dx min-dy recipient deadline)
+  )
+)
+
+(define-public (bulk-swap-x-for-y
+  (swaps (list 10 {token-x: <ft-trait>, token-y: <ft-trait>, dx: uint, min-dy: uint, recipient: principal, deadline: uint})))
+  (begin
+    (asserts! (> (len swaps) u0) ERR_ZERO_INPUT)
+    ;; Process all swaps - each will validate individually
+    (ok (map bulk-swap-x-for-y-internal swaps))
+  )
+)
+
+;; Bulk swap Y for X (up to 10 swaps in one transaction)
+(define-private (bulk-swap-y-for-x-internal
+  (swap-data {token-x: <ft-trait>, token-y: <ft-trait>, dy: uint, min-dx: uint, recipient: principal, deadline: uint}))
+  (let
+    (
+      (token-x (get token-x swap-data))
+      (token-y (get token-y swap-data))
+      (dy (get dy swap-data))
+      (min-dx (get min-dx swap-data))
+      (recipient (get recipient swap-data))
+      (deadline (get deadline swap-data))
+    )
+    ;; Call the main swap function
+    (swap-y-for-x token-x token-y dy min-dx recipient deadline)
+  )
+)
+
+(define-public (bulk-swap-y-for-x
+  (swaps (list 10 {token-x: <ft-trait>, token-y: <ft-trait>, dy: uint, min-dx: uint, recipient: principal, deadline: uint})))
+  (begin
+    (asserts! (> (len swaps) u0) ERR_ZERO_INPUT)
+    ;; Process all swaps - each will validate individually
+    (ok (map bulk-swap-y-for-x-internal swaps))
+  )
+)
+
+;; Bulk add liquidity (up to 5 liquidity additions in one transaction)
+(define-private (bulk-add-liquidity-internal
+  (liquidity-data {token-x: <ft-trait>, token-y: <ft-trait>, amount-x: uint, amount-y: uint, min-shares: uint}))
+  (let
+    (
+      (token-x (get token-x liquidity-data))
+      (token-y (get token-y liquidity-data))
+      (amount-x (get amount-x liquidity-data))
+      (amount-y (get amount-y liquidity-data))
+      (min-shares (get min-shares liquidity-data))
+    )
+    ;; Call the main add-liquidity function
+    (add-liquidity token-x token-y amount-x amount-y min-shares)
+  )
+)
+
+(define-public (bulk-add-liquidity
+  (liquidity-additions (list 5 {token-x: <ft-trait>, token-y: <ft-trait>, amount-x: uint, amount-y: uint, min-shares: uint})))
+  (begin
+    (asserts! (> (len liquidity-additions) u0) ERR_ZERO_INPUT)
+    ;; Process all liquidity additions - each will validate individually
+    (ok (map bulk-add-liquidity-internal liquidity-additions))
+  )
+)
+
+;; Bulk remove liquidity (up to 5 liquidity removals in one transaction)
+(define-private (bulk-remove-liquidity-internal
+  (removal-data {token-x: <ft-trait>, token-y: <ft-trait>, shares: uint, min-x: uint, min-y: uint}))
+  (let
+    (
+      (token-x (get token-x removal-data))
+      (token-y (get token-y removal-data))
+      (shares (get shares removal-data))
+      (min-x (get min-x removal-data))
+      (min-y (get min-y removal-data))
+    )
+    ;; Call the main remove-liquidity function
+    (remove-liquidity token-x token-y shares min-x min-y)
+  )
+)
+
+(define-public (bulk-remove-liquidity
+  (liquidity-removals (list 5 {token-x: <ft-trait>, token-y: <ft-trait>, shares: uint, min-x: uint, min-y: uint})))
+  (begin
+    (asserts! (> (len liquidity-removals) u0) ERR_ZERO_INPUT)
+    ;; Process all liquidity removals - each will validate individually
+    (ok (map bulk-remove-liquidity-internal liquidity-removals))
+  )
+)
